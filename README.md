@@ -3,8 +3,11 @@
 
 A full-stack file conversion web app. Upload a file, pick a tool, and download the result. The backend is a **FastAPI** service that handles 16 conversion and PDF tools. The frontend is a mobile-style **HTML, CSS and JavaScript** app with a clean blue interface.
 
-> Add a screenshot here: `![App screenshot](docs/screenshot.png)`
+## Screenshots
 
+| Desktop | Mobile |
+|---|---|
+| ![Ruu Converter on desktop](docs/screenshot-desktop.png) | <img src="docs/screenshot-mobile.png" alt="Ruu Converter on mobile" width="260"> |
 ## Features
 
 | Category | Tools |
