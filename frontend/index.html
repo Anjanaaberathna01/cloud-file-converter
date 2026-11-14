@@ -3,32 +3,45 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>File Converter</title>
+<title>Ruu Converter - Convert PDF, Word, Excel and images online</title>
+<meta name="description" content="Ruu Converter turns your files into any format. PDF, Word, Excel, PowerPoint and images, plus merge, split and compress.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<main id="app">
-  <header class="hero">
-    <div class="bar">
-      <button class="ic" id="menu" aria-label="Conversion history">☰</button>
-      <h1>File Converter</h1>
-      <button class="crown" id="pro" aria-label="Go Pro">👑</button>
+<header class="hero">
+  <nav class="nav">
+    <a class="logo" href="#"><span>R</span>Ruu Converter</a>
+    <div class="links"><a href="#tools">Tools</a><button id="navBatch">Batch</button><button id="menu">History</button></div>
+    <button class="crown" id="pro" aria-label="Go Pro">👑 <b>Go Pro</b></button>
+  </nav>
+  <div class="hero-in">
+    <div class="copy">
+      <h1>Convert your files in multiple formats</h1>
+      <p>PDF, Word, Excel, PowerPoint and images. Merge, split, translate and compress too.</p>
+      <button class="upload" id="quick">⇪ Upload File</button>
+      <input type="file" id="qf" hidden>
     </div>
-    <h2>Convert your files in multiple formats</h2>
-    <button class="upload" id="quick">⇪ Upload File</button>
-    <input type="file" id="qf" hidden>
-  </header>
+    <div class="art" aria-hidden="true">
+      <div class="fc"><em>PDF</em><b>Report 123…</b><small>file size 3.5mb</small><i>▶</i></div>
+      <div class="fc"><em>DOC</em><b>Letter 123…</b><small>file size 1.2mb</small><i>▶</i></div>
+      <div class="fc"><em>XLS</em><b>Sheet 123…</b><small>file size 2.1mb</small><i>▶</i></div>
+      <div class="fc"><em>PNG</em><b>Photo 123…</b><small>file size 4.8mb</small><i>▶</i></div>
+    </div>
+  </div>
+</header>
+<main class="wrap">
   <section class="cards">
-    <button class="card" id="goBatch"><i>🗂</i><b>Batch Conversions</b></button>
-    <button class="card" id="goHist"><i>🕘</i><b>Conversions History</b></button>
+    <button class="card" id="goBatch"><i>🗂</i><b>Batch Conversions</b><small>Merge or combine many files at once</small></button>
+    <button class="card" id="goHist"><i>🕘</i><b>Conversions History</b><small>Everything you converted on this device</small></button>
   </section>
-  <h3>All tools</h3>
+  <h2 id="tools-h">All tools</h2>
   <div id="tools" class="grid"></div>
-  <h3>Recent</h3>
-  <div id="recent"></div>
+  <h2>Recent</h2>
+  <div id="recent" class="recent"></div>
 </main>
+<footer class="foot">Ruu Converter · Your files are deleted from the server after conversion.</footer>
 <div id="sheet" class="sheet" role="dialog" aria-modal="true"></div>
 <div id="toast" role="status"></div>
 <script src="app.js"></script>
