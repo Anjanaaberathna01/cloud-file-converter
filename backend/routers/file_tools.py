@@ -1,8 +1,10 @@
-from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, BackgroundTasks # pyright: ignore[reportMissingImports]
+from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, BackgroundTasks  # pyright: ignore[reportMissingImports]
+from fastapi.responses import FileResponse  # pyright: ignore[reportMissingImports]
 from typing import Optional
 from utils.auth import verify_firebase_token
 from utils.security import validate_file_size, validate_file_header, generate_safe_filename, cleanup_file
 import os
+import shutil
 
 router = APIRouter(prefix="/convert", tags=["File Conversion"])
 
@@ -11,7 +13,7 @@ async def process_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     has_paid_micro_fee: bool = Form(False),
-    user: Optional[dict] = Depends(verify_firebase_token) 
+    user: Optional[dict] = Depends(verify_firebase_token)
 ):
     contents = await file.read()
     file_size = len(contents)
@@ -29,8 +31,8 @@ async def process_file(
                     "message": "25MB ට වැඩි ගොනු පරිවර්තනය කිරීමට කරුණාකර ඔබගේ ගිණුමට ලොග් වන්න."
                 }
             )
-        
-        is_pro = user.get("is_pro", False) 
+
+        is_pro = user.get("is_pro", False)
         validate_file_size(
             file_size=file_size,
             is_pro=is_pro,
@@ -42,18 +44,24 @@ async def process_file(
     await validate_file_header(file, allowed_types=["pdf", "image", "word", "excel"])
     safe_name = generate_safe_filename(file.filename)
     input_path = os.path.join("uploads", safe_name)
-    
+
     with open(input_path, "wb") as buffer:
         buffer.write(contents)
-        
+
     background_tasks.add_task(cleanup_file, input_path)
 
     # --- මෙතැනට ඔයාගේ අදාළ conversion logic එක ලියන්න ---
     output_filename = f"converted_{safe_name}"
     output_path = os.path.join("outputs", output_filename)
-    # (උදාහරණයක් ලෙස file එක copy කිරීමක් කළ හැක)
-    
+
+    # Placeholder: output file එක ඇත්තටම හැදෙන්න ඕනේ, නැත්නම් FileResponse එක error වෙනවා.
+    # ඔයාගේ real conversion logic එක ලියනකම් input file එකම copy කරනවා.
+    try:
+        shutil.copyfile(input_path, output_path)
+    except Exception as e:
+        cleanup_file(input_path)
+        raise HTTPException(status_code=500, detail=f"File processing failed: {str(e)}")
+
     background_tasks.add_task(cleanup_file, output_path)
 
-    from fastapi.responses import FileResponse # pyright: ignore[reportMissingImports]
     return FileResponse(output_path, filename=file.filename)
