@@ -1,12 +1,11 @@
 import os
-import magic  # python-magic for MIME type checking  # pyright: ignore[reportMissingImports]
-from fastapi import HTTPException, UploadFile  # pyright: ignore[reportMissingImports]
+import uuid
+from fastapi import HTTPException, UploadFile
 
-# Uploads සහ Outputs folders
+# Uploads සහ Outputs folders නිර්මාණය කරගැනීම
 UPLOAD_DIR = "uploads"
 OUTPUT_DIR = "outputs"
 
-# Folders නැත්නම් auto create කරගැනීම
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -19,18 +18,34 @@ def cleanup_file(file_path: str):
         except Exception as e:
             print(f"Error cleaning up file {file_path}: {e}")
 
-# 2. PDF File Header (Magic Number) Validation
-async def validate_pdf_file(file: UploadFile):
-    """Ensure the uploaded file is genuinely a PDF by checking its binary header."""
+# 2. File Header (Magic Number) & Type Validation
+async def validate_file_header(file: UploadFile, allowed_types: list = ["pdf", "image", "word", "excel"]):
+    """
+    Ensure the uploaded file is genuinely matching its format by checking its binary header,
+    preventing malicious file extension spoofing (e.g., malware.exe renamed to document.pdf).
+    """
     header = await file.read(2048)
     await file.seek(0)  # Reset file pointer back to start
     
-    # PDF files always start with %PDF-
-    if not header.startswith(b'%PDF-'):
-        raise HTTPException(
-            status_code=400, 
-            detail="Invalid file format! The file is not a genuine PDF."
-        )
+    # PDF Header Check (%PDF-)
+    if "pdf" in allowed_types and header.startswith(b'%PDF-'):
+        return True
+        
+    # Image Headers Check (PNG, JPEG, WEBP)
+    if "image" in allowed_types:
+        if header.startswith(b'\x89PNG\r\n\x1a\n') or header.startswith(b'\xff\xd8\xff') or header.startswith(b'RIFF') and header[8:12] == b'WEBP':
+            return True
+
+    # Office Documents (ZIP-based: docx, xlsx, pptx start with PK..)
+    if any(t in allowed_types for t in ["word", "excel", "pptx"]):
+        if header.startswith(b'PK\x03\x04'):
+            return True
+
+    # දැඩි ආරක්ෂාව සඳහා අනවසර හෝ නොගැලපෙන files block කිරීම
+    raise HTTPException(
+        status_code=400, 
+        detail="Invalid file format! The file content does not match a genuine document or image format."
+    )
 
 # 3. File Size Limit Validator (25MB Free Limit & Rs. 25 Micro-Payment Check)
 def validate_file_size(file_size: int, is_pro: bool = False, has_paid_micro_fee: bool = False, max_size_mb: int = 25):
@@ -58,3 +73,9 @@ def validate_file_size(file_size: int, is_pro: bool = False, has_paid_micro_fee:
                     "suggestion": "මෙම විශාල file එක convert කරගැනීමට Rs. 25ක් ගෙවන්න හෝ අපේ Free PDF Compressor එක පාවිච්චි කරන්න."
                 }
             )
+
+# 4. Safe Unique Filename Generator (Path Traversal & Overwrite Protection)
+def generate_safe_filename(original_filename: str) -> str:
+    """Generate a unique UUID filename to prevent path traversal and naming collisions."""
+    ext = os.path.splitext(original_filename)[1].lower()
+    return f"{uuid.uuid4()}{ext}"
