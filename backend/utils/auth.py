@@ -1,13 +1,11 @@
-import firebase_admin # pyright: ignore[reportMissingImports]
-from firebase_admin import credentials, auth # pyright: ignore[reportMissingImports]
-from fastapi import HTTPException, Security, Optional # pyright: ignore[reportMissingImports]
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials # pyright: ignore[reportMissingImports]
+from typing import Optional
+from firebase_admin import auth  # pyright: ignore[reportMissingImports]
+from fastapi import HTTPException, Security  # pyright: ignore[reportMissingImports]
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials  # pyright: ignore[reportMissingImports]
 
-# Firebase Admin SDK Initialization
-# (ඔයාගේ backend ෆෝල්ඩර් එකේ firebase_secret.json තියෙන්න ඕනේ)
-cred = credentials.Certificate("backend/firebase_secret.json")
-if not firebase_admin._apps:
-    firebase_admin.initialize_app(cred)
+# Firebase Admin SDK එක initialize වෙන්නේ database.py එකේදී (FIREBASE_CREDENTIALS_PATH .env එකෙන්).
+# මෙතන import කරන්නේ ඒක කලින් initialize වෙලා තියෙනවා කියලා විශ්වාස කරගන්න විතරයි.
+import database  # noqa: F401  # pyright: ignore[reportUnusedImport]
 
 security = HTTPBearer(auto_error=False)
 
@@ -18,7 +16,7 @@ def verify_firebase_token(credentials: Optional[HTTPAuthorizationCredentials] = 
     """
     if not credentials:
         return None
-    
+
     token = credentials.credentials
     try:
         decoded_token = auth.verify_id_token(token)

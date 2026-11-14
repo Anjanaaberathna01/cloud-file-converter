@@ -1,31 +1,39 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException # pyright: ignore[reportMissingImports]
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends  # pyright: ignore[reportMissingImports]
 from fastapi.middleware.cors import CORSMiddleware  # pyright: ignore[reportMissingImports]
 from fastapi.responses import FileResponse  # pyright: ignore[reportMissingImports]
-from PIL import Image  # pyright: ignore[reportMissingImports]
+from starlette.background import BackgroundTask  # pyright: ignore[reportMissingImports]
+from PIL import Image, ImageEnhance  # pyright: ignore[reportMissingImports]
+import io
 import os
-import fitz  # pyright: ignore[reportMissingImports]
+import time
 import shutil
 import uuid
-import fitz  # pyright: ignore[reportMissingImports]
 import zipfile
+from xml.sax.saxutils import escape
+import fitz  # pyright: ignore[reportMissingImports]
 import pandas as pd  # pyright: ignore[reportMissingImports, reportMissingModuleSource]
-import comtypes.client # pyright: ignore[reportMissingImports]
 import pdfplumber  # pyright: ignore[reportMissingImports]
 from pdf2docx import Converter  # pyright: ignore[reportMissingImports]
 from docx2pdf import convert  # pyright: ignore[reportMissingImports]
-from reportlab.lib.pagesizes import letter, landscape # pyright: ignore[reportMissingImports, reportMissingModuleSource]
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer # pyright: ignore[reportMissingImports, reportMissingModuleSource]
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle # pyright: ignore[reportMissingImports, reportMissingModuleSource]
-from reportlab.lib import colors # pyright: ignore[reportMissingImports, reportMissingModuleSource]
-from typing import Optional, List
+from reportlab.lib.pagesizes import letter, landscape  # pyright: ignore[reportMissingImports, reportMissingModuleSource]
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer  # pyright: ignore[reportMissingImports, reportMissingModuleSource]
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle  # pyright: ignore[reportMissingImports, reportMissingModuleSource]
+from reportlab.lib import colors  # pyright: ignore[reportMissingImports, reportMissingModuleSource]
+from typing import Optional
 from pptx import Presentation  # pyright: ignore[reportMissingImports]
 from pptx.util import Inches  # pyright: ignore[reportMissingImports]
-from PIL import ImageEnhance  # pyright: ignore[reportMissingImports]
-from weasyprint import HTML  # pyright: ignore[reportMissingImports]
+from weasyprint import HTML, default_url_fetcher  # pyright: ignore[reportMissingImports]
 from deep_translator import GoogleTranslator  # pyright: ignore[reportMissingImports]
-from utils.security import validate_file_size, validate_pdf_file, cleanup_file
-from routers import payment, file_tools
 
+# comtypes works only on Windows (MS Office). Don't crash the whole app on other OS.
+try:
+    import comtypes.client  # pyright: ignore[reportMissingImports]
+except ImportError:
+    comtypes = None
+
+from utils.security import validate_file_size, validate_file_header, generate_safe_filename, cleanup_file
+from utils.auth import verify_firebase_token
+from routers import payment, file_tools
 
 
 app = FastAPI(title="Cloud File Converter API")
@@ -47,6 +55,100 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 MAX_FILE_SIZE = 20 * 1024 * 1024
 PRO_MAX_FILE_SIZE = 100 * 1024 * 1024
 
+# Used to build download links (set BASE_URL in .env when you deploy)
+BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
+
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+A4_WIDTH, A4_HEIGHT = 1240, 1754  # A4 proportions at good resolution
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def cleanup_many(paths):
+    for p in paths:
+        cleanup_file(p)
+
+
+def send_file(path: str, media_type: str, filename: str, extra_cleanup=()):
+    """
+    Return the file AND delete it only after the response has been fully sent.
+    (Deleting inside `finally` removes the file before FastAPI streams it.)
+    """
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=filename,
+        background=BackgroundTask(cleanup_many, [path, *extra_cleanup]),
+    )
+
+
+def make_input_path(file_id: str, filename: Optional[str], index: Optional[int] = None) -> str:
+    """Build an upload path using only the base name of the client's filename."""
+    safe = os.path.basename((filename or "upload").replace("\\", "/")) or "upload"
+    prefix = f"{file_id}_{index}_" if index is not None else f"{file_id}_"
+    return os.path.join(UPLOAD_DIR, prefix + safe)
+
+
+def sweep_old_files(max_age_seconds: int = 3600):
+    """Delete leftover temp files older than 1 hour (e.g. split-PDF download files)."""
+    now = time.time()
+    for folder in (UPLOAD_DIR, OUTPUT_DIR):
+        for name in os.listdir(folder):
+            p = os.path.join(folder, name)
+            try:
+                if os.path.isfile(p) and now - os.path.getmtime(p) > max_age_seconds:
+                    os.remove(p)
+            except OSError:
+                pass
+
+
+def images_to_a4_pdf(image_paths, output_path, enhance: bool = False) -> bool:
+    """Put every image on a white A4 canvas (centered) and save them as one PDF."""
+    processed_images = []
+    for path in image_paths:
+        with Image.open(path) as src:
+            img = src.convert("RGB")
+
+        if enhance:
+            img = ImageEnhance.Contrast(img).enhance(1.5)
+            img = ImageEnhance.Sharpness(img).enhance(1.3)
+
+        canvas = Image.new("RGB", (A4_WIDTH, A4_HEIGHT), (255, 255, 255))
+        img.thumbnail((A4_WIDTH, A4_HEIGHT), Image.Resampling.LANCZOS)
+        x = (A4_WIDTH - img.width) // 2
+        y = (A4_HEIGHT - img.height) // 2
+        canvas.paste(img, (x, y))
+        processed_images.append(canvas)
+
+    if not processed_images:
+        return False
+
+    processed_images[0].save(
+        output_path,
+        "PDF",
+        save_all=True,
+        append_images=processed_images[1:]
+    )
+    return True
+
+
+def safe_url_fetcher(url, *args, **kwargs):
+    """
+    WeasyPrint would otherwise load file:// and http:// links found inside the
+    uploaded HTML (local file read / SSRF). Only inline data: URLs are allowed.
+    """
+    if url.startswith("data:"):
+        return default_url_fetcher(url)
+    raise ValueError(f"External resource blocked: {url}")
+
+
+sweep_old_files()
+
+
 @app.get("/")
 def read_root():
     return {"status": "File Converter API is running!"}
@@ -64,96 +166,109 @@ async def generic_conversion(
 ):
     contents = await file.read()
     file_size = len(contents)
-    
-    # security.py එකේ තියෙන validate_file_size function එක මඟින් 
+
+    # security.py එකේ තියෙන validate_file_size function එක මඟින්
     # 25MB සීමාව, 100MB Pro සීමාව සහ Rs. 25 Micro-payment check එක එකවර සිදු කරයි.
     validate_file_size(file_size, is_pro=is_pro, has_paid_micro_fee=has_paid_micro_fee)
-    
+
     # ---------------------------------------------------------
-    # Free සීමාව ඇතුළේ නම් හෝ user Rs. 25 ගෙවලා / Pro user කෙනෙක් නම් 
+    # Free සීමාව ඇතුළේ නම් හෝ user Rs. 25 ගෙවලා / Pro user කෙනෙක් නම්
     # conversion වැඩේ මෙතනින් ඉදිරියට කරගෙන යන්න පුළුවන්...
     # ---------------------------------------------------------
-    
+
     return {
-        "status": "success", 
+        "status": "success",
         "message": f"File size validated successfully ({round(file_size / (1024*1024), 2)}MB). Ready for conversion!"
     }
 
 # 1. Image Conversion Endpoint
 @app.post("/convert/image")
-async def convert_image(file: UploadFile = File(...), target_format: str = Form(...)):
+async def convert_image(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    target_format: str = Form(...)
+):
     file_id = str(uuid.uuid4())
-    input_path = os.path.join(UPLOAD_DIR, f"{file_id}_{file.filename}")
-    
+    input_path = make_input_path(file_id, file.filename)
+    output_path = None
+
     with open(input_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-        
+
+    background_tasks.add_task(cleanup_file, input_path)
+
     try:
-        img = Image.open(input_path)
-        target_ext = target_format.lower()
-        if target_ext in ["jpeg", "jpg"]:
-            img = img.convert("RGB")
-            target_ext = "jpeg"
-            
-        output_filename = f"{file_id}_converted.{target_ext}"
-        output_path = os.path.join(OUTPUT_DIR, output_filename)
-        
-        img.save(output_path, target_ext.upper())
-        
+        target_ext = target_format.lower().strip()
+        if not target_ext.isalnum():
+            raise HTTPException(status_code=400, detail="Invalid target format!")
+
+        with Image.open(input_path) as src:
+            img = src
+            if target_ext in ["jpeg", "jpg"]:
+                img = src.convert("RGB")
+                target_ext = "jpeg"
+
+            output_filename = f"{file_id}_converted.{target_ext}"
+            output_path = os.path.join(OUTPUT_DIR, output_filename)
+            img.save(output_path, target_ext.upper())
+
+        background_tasks.add_task(cleanup_file, output_path)
+
         return FileResponse(output_path, media_type=f"image/{target_ext}", filename=f"converted_image.{target_ext}")
-    
+
+    except HTTPException:
+        cleanup_many([input_path, output_path])
+        raise
     except Exception as e:
+        cleanup_many([input_path, output_path])
         raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        if os.path.exists(input_path):
-            os.remove(input_path)
 
 # 2. PDF to Word Endpoint
 @app.post("/convert/pdf-to-word")
 async def convert_pdf_to_word(file: UploadFile = File(...)):
     file_id = str(uuid.uuid4())
-    input_path = os.path.join(UPLOAD_DIR, f"{file_id}_{file.filename}")
-    output_filename = f"{file_id}_converted.docx"
-    output_path = os.path.join(OUTPUT_DIR, output_filename)
-    
+    input_path = make_input_path(file_id, file.filename)
+    output_path = os.path.join(OUTPUT_DIR, f"{file_id}_converted.docx")
+
     with open(input_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-        
+
     try:
         cv = Converter(input_path)
-        cv.convert(output_path, start=0, end=None)
-        cv.close()
-        
-        return FileResponse(output_path, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", filename="converted_document.docx")
-    
+        try:
+            cv.convert(output_path, start=0, end=None)
+        finally:
+            cv.close()
+
+        return send_file(output_path, DOCX_MIME, "converted_document.docx")
+
     except Exception as e:
+        cleanup_file(output_path)
         raise HTTPException(status_code=400, detail=str(e))
     finally:
-        if os.path.exists(input_path):
-            os.remove(input_path)
+        cleanup_file(input_path)
 
 # 3. Word to PDF Endpoint
 @app.post("/convert/word-to-pdf")
 async def convert_word_to_pdf(file: UploadFile = File(...)):
     file_id = str(uuid.uuid4())
-    input_path = os.path.join(UPLOAD_DIR, f"{file_id}_{file.filename}")
-    output_filename = f"{file_id}_converted.pdf"
-    output_path = os.path.join(OUTPUT_DIR, output_filename)
-    
+    input_path = make_input_path(file_id, file.filename)
+    output_path = os.path.join(OUTPUT_DIR, f"{file_id}_converted.pdf")
+
     with open(input_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-        
+
     try:
         # docx2pdf uses MS Word installed on Windows in the background
         convert(input_path, output_path)
-        
-        return FileResponse(output_path, media_type="application/pdf", filename="converted_document.pdf")
-    
+
+        return send_file(output_path, "application/pdf", "converted_document.pdf")
+
     except Exception as e:
+        cleanup_file(output_path)
         raise HTTPException(status_code=400, detail=str(e))
     finally:
-        if os.path.exists(input_path):
-            os.remove(input_path)
+        cleanup_file(input_path)
 
 # 4. Multiple Images to PDF Endpoint with Uniform Size (A4 Standard Canvas)
 @app.post("/convert/images-to-pdf")
@@ -161,72 +276,36 @@ async def convert_images_to_pdf(files: list[UploadFile] = File(...)):
     file_id = str(uuid.uuid4())
     saved_image_paths = []
     total_size = 0
-    
+    output_path = None
+
     try:
         for i, file in enumerate(files):
             contents = await file.read()
             total_size += len(contents)
-            
+
             if total_size > MAX_FILE_SIZE:
                 raise HTTPException(status_code=400, detail="Total files size exceeds the 20MB limit!")
-                
-            input_path = os.path.join(UPLOAD_DIR, f"{file_id}_{i}_{file.filename}")
+
+            input_path = make_input_path(file_id, file.filename, i)
             with open(input_path, "wb") as f:
                 f.write(contents)
             saved_image_paths.append(input_path)
-            
-        processed_images = []
-        # Standard A4 size proportions at good resolution (e.g., 1240 x 1754 pixels)
-        target_width, target_height = 1240, 1754
-        
-        for path in saved_image_paths:
-            img = Image.open(path)
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-                
-            # 1. Create a blank white canvas of standard size
-            canvas = Image.new("RGB", (target_width, target_height), (255, 255, 255))
-            
-            # 2. Resize image to fit inside the canvas while preserving aspect ratio
-            img.thumbnail((target_width, target_height), Image.Resampling.LANCZOS)
-            
-            # 3. Calculate position to paste it right in the center of the canvas
-            x = (target_width - img.width) // 2
-            y = (target_height - img.height) // 2
-            canvas.paste(img, (x, y))
-            
-            processed_images.append(canvas)
-            
-        if not processed_images:
+
+        output_path = os.path.join(OUTPUT_DIR, f"{file_id}_converted.pdf")
+
+        if not images_to_a4_pdf(saved_image_paths, output_path):
             raise HTTPException(status_code=400, detail="No valid images provided")
-            
-        output_filename = f"{file_id}_converted.pdf"
-        output_path = os.path.join(OUTPUT_DIR, output_filename)
-        
-        # Save all uniform images into a single PDF
-        processed_images[0].save(
-            output_path,
-            "PDF",
-            save_all=True,
-            append_images=processed_images[1:]
-        )
-        
-        return FileResponse(
-            output_path, 
-            media_type="application/pdf", 
-            filename="merged_images.pdf"
-        )
-        
-    except HTTPException as he:
-        raise he
+
+        return send_file(output_path, "application/pdf", "merged_images.pdf")
+
+    except HTTPException:
+        cleanup_file(output_path)
+        raise
     except Exception as e:
+        cleanup_file(output_path)
         raise HTTPException(status_code=400, detail=str(e))
     finally:
-        for path in saved_image_paths:
-            if os.path.exists(path):
-                os.remove(path)
-        if os.path.exists(output_path):
-            os.remove(output_path)
+        cleanup_many(saved_image_paths)
 
 # 5. Excel to PDF Endpoint
 @app.post("/convert/excel-to-pdf")
@@ -234,24 +313,23 @@ async def convert_excel_to_pdf(file: UploadFile = File(...)):
     contents = await file.read()
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="File size exceeds the 20MB limit!")
-        
+
     file_id = str(uuid.uuid4())
-    input_path = os.path.join(UPLOAD_DIR, f"{file_id}_{file.filename}")
-    output_filename = f"{file_id}_converted.pdf"
-    output_path = os.path.join(OUTPUT_DIR, output_filename)
-    
+    input_path = make_input_path(file_id, file.filename)
+    output_path = os.path.join(OUTPUT_DIR, f"{file_id}_converted.pdf")
+
     with open(input_path, "wb") as f:
         f.write(contents)
-        
+
     try:
         # Read Excel file using pandas
         df = pd.read_excel(input_path)
         df = df.fillna("")  # Replace NaN with empty strings
-        
+
         # Setup PDF document (Landscape for wide spreadsheets)
         doc = SimpleDocTemplate(output_path, pagesize=landscape(letter))
         elements = []
-        
+
         # Add Title style
         styles = getSampleStyleSheet()
         title_style = ParagraphStyle(
@@ -261,11 +339,11 @@ async def convert_excel_to_pdf(file: UploadFile = File(...)):
             textColor=colors.HexColor('#1e293b'),
             spaceAfter=15
         )
-        elements.append(Paragraph(f"Converted Report: {file.filename}", title_style))
-        
+        elements.append(Paragraph(f"Converted Report: {escape(file.filename or '')}", title_style))
+
         # Convert DataFrame to list of lists for ReportLab Table
         data = [df.columns.tolist()] + df.values.tolist()
-        
+
         # Build Table with formatting
         table = Table(data)
         table.setStyle(TableStyle([
@@ -280,23 +358,17 @@ async def convert_excel_to_pdf(file: UploadFile = File(...)):
             ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
             ('FONTSIZE', (0, 1), (-1, -1), 9),
         ]))
-        
+
         elements.append(table)
         doc.build(elements)
-        
-        return FileResponse(
-            output_path, 
-            media_type="application/pdf", 
-            filename="converted_spreadsheet.pdf"
-        )
-        
+
+        return send_file(output_path, "application/pdf", "converted_spreadsheet.pdf")
+
     except Exception as e:
+        cleanup_file(output_path)
         raise HTTPException(status_code=400, detail=str(e))
     finally:
-        if os.path.exists(input_path):
-            os.remove(input_path)
-            if os.path.exists(output_path):
-                os.remove(output_path)
+        cleanup_file(input_path)
 
 # 6. PDF to Excel Endpoint
 @app.post("/convert/pdf-to-excel")
@@ -304,18 +376,17 @@ async def convert_pdf_to_excel(file: UploadFile = File(...)):
     contents = await file.read()
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="File size exceeds the 20MB limit!")
-        
+
     file_id = str(uuid.uuid4())
-    input_path = os.path.join(UPLOAD_DIR, f"{file_id}_{file.filename}")
-    output_filename = f"{file_id}_converted.xlsx"
-    output_path = os.path.join(OUTPUT_DIR, output_filename)
-    
+    input_path = make_input_path(file_id, file.filename)
+    output_path = os.path.join(OUTPUT_DIR, f"{file_id}_converted.xlsx")
+
     with open(input_path, "wb") as f:
         f.write(contents)
-        
+
     try:
         all_tables = []
-        
+
         # Open PDF with pdfplumber and extract tables from all pages
         with pdfplumber.open(input_path) as pdf:
             for page in pdf.pages:
@@ -323,32 +394,27 @@ async def convert_pdf_to_excel(file: UploadFile = File(...)):
                 for table in tables:
                     for row in table:
                         all_tables.append(row)
-                        
+
         if not all_tables:
             raise HTTPException(status_code=400, detail="No tabular data found in the PDF!")
-            
+
         # Convert extracted table data to Pandas DataFrame
         # First row is usually headers
         df = pd.DataFrame(all_tables[1:], columns=all_tables[0])
-        
+
         # Save to Excel
         df.to_excel(output_path, index=False)
-        
-        return FileResponse(
-            output_path, 
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
-            filename="converted_table.xlsx"
-        )
-        
-    except HTTPException as he:
-        raise he
+
+        return send_file(output_path, XLSX_MIME, "converted_table.xlsx")
+
+    except HTTPException:
+        cleanup_file(output_path)
+        raise
     except Exception as e:
+        cleanup_file(output_path)
         raise HTTPException(status_code=400, detail=str(e))
     finally:
-        if os.path.exists(input_path):
-            os.remove(input_path)
-            if os.path.exists(output_path):
-                os.remove(output_path)
+        cleanup_file(input_path)
 
 # 7. Advanced PDF to Images (With Specific Page Selection)
 @app.post("/convert/pdf-to-selected-images")
@@ -359,120 +425,116 @@ async def convert_pdf_to_selected_images(
     contents = await file.read()
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="File size exceeds the 20MB limit!")
-        
+
     file_id = str(uuid.uuid4())
-    input_path = os.path.join(UPLOAD_DIR, f"{file_id}_{file.filename}")
-    
+    input_path = make_input_path(file_id, file.filename)
+
     with open(input_path, "wb") as f:
         f.write(contents)
-        
+
     extracted_image_paths = []
-    
+    zip_path = None
+
     try:
-        doc = fitz.open(input_path)
-        total_pages = len(doc)
-        
-        # Parse specific pages if provided (e.g., "2, 6" -> [1, 5] because 0-indexed)
-        target_page_indices = []
-        if pages:
-            try:
-                # Split by comma and convert to 0-based index
-                for p in pages.split(","):
-                    p_num = int(p.strip())
-                    if 1 <= p_num <= total_pages:
-                        target_page_indices.append(p_num - 1)
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid page numbers format! Use comma-separated numbers (e.g., 2,6).")
-        else:
-            # If no pages specified, convert all pages
-            target_page_indices = list(range(total_pages))
-            
-        if not target_page_indices:
-            raise HTTPException(status_code=400, detail="No valid pages selected!")
-            
-        # Extract selected pages
-        for page_idx in target_page_indices:
-            page = doc[page_idx]
-            pix = page.get_pixmap(dpi=150)  # High resolution rendering
-            
-            img_filename = f"{file_id}_page_{page_idx + 1}.png"
-            img_path = os.path.join(OUTPUT_DIR, img_filename)
-            pix.save(img_path)
-            extracted_image_paths.append(img_path)
-            
-        doc.close()
-        
+        with fitz.open(input_path) as doc:
+            total_pages = len(doc)
+
+            # Parse specific pages if provided (e.g., "2, 6" -> [1, 5] because 0-indexed)
+            target_page_indices = []
+            if pages:
+                try:
+                    # Split by comma and convert to 0-based index
+                    for p in pages.split(","):
+                        p_num = int(p.strip())
+                        if 1 <= p_num <= total_pages:
+                            target_page_indices.append(p_num - 1)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid page numbers format! Use comma-separated numbers (e.g., 2,6).")
+            else:
+                # If no pages specified, convert all pages
+                target_page_indices = list(range(total_pages))
+
+            if not target_page_indices:
+                raise HTTPException(status_code=400, detail="No valid pages selected!")
+
+            # Extract selected pages
+            for page_idx in target_page_indices:
+                page = doc[page_idx]
+                pix = page.get_pixmap(dpi=150)  # High resolution rendering
+
+                img_filename = f"{file_id}_page_{page_idx + 1}.png"
+                img_path = os.path.join(OUTPUT_DIR, img_filename)
+                pix.save(img_path)
+                extracted_image_paths.append(img_path)
+
         # If only 1 image extracted, return it directly
         if len(extracted_image_paths) == 1:
-            return FileResponse(
+            return send_file(
                 extracted_image_paths[0],
-                media_type="image/png",
-                filename=f"page_{target_page_indices[0] + 1}.png"
+                "image/png",
+                f"page_{target_page_indices[0] + 1}.png"
             )
-            
+
         # If multiple images, bundle them into a ZIP file
-        zip_filename = f"{file_id}_selected_images.zip"
-        zip_path = os.path.join(OUTPUT_DIR, zip_filename)
-        
+        zip_path = os.path.join(OUTPUT_DIR, f"{file_id}_selected_images.zip")
+
         with zipfile.ZipFile(zip_path, 'w') as zipf:
             for img_path in extracted_image_paths:
                 zipf.write(img_path, arcname=os.path.basename(img_path))
-                
-        return FileResponse(
-            zip_path,
-            media_type="application/zip",
-            filename="selected_pdf_images.zip"
-        )
-        
-    except HTTPException as he:
-        raise he
+
+        # Individual PNGs are no longer needed once they are inside the ZIP
+        cleanup_many(extracted_image_paths)
+
+        return send_file(zip_path, "application/zip", "selected_pdf_images.zip")
+
+    except HTTPException:
+        cleanup_many([*extracted_image_paths, zip_path])
+        raise
     except Exception as e:
+        cleanup_many([*extracted_image_paths, zip_path])
         raise HTTPException(status_code=400, detail=str(e))
     finally:
-        if os.path.exists(input_path):
-            os.remove(input_path)
-            for img_path in extracted_image_paths:
-                if os.path.exists(img_path):
-                    os.remove(img_path)
+        cleanup_file(input_path)
 
 # 8. PowerPoint (.pptx) to PDF Endpoint (Windows MS Office required)
 @app.post("/convert/pptx-to-pdf")
 async def convert_pptx_to_pdf(file: UploadFile = File(...)):
+    if comtypes is None:
+        raise HTTPException(status_code=501, detail="PPTX to PDF needs Windows with MS PowerPoint installed.")
+
     contents = await file.read()
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="File size exceeds the 20MB limit!")
-        
+
     file_id = str(uuid.uuid4())
-    input_path = os.path.join(UPLOAD_DIR, f"{file_id}_{file.filename}")
-    output_filename = f"{file_id}_converted.pdf"
-    output_path = os.path.join(OUTPUT_DIR, output_filename)
-    
+    input_path = make_input_path(file_id, file.filename)
+    output_path = os.path.join(OUTPUT_DIR, f"{file_id}_converted.pdf")
+
     with open(input_path, "wb") as f:
         f.write(contents)
-        
+
     try:
         # Initialize PowerPoint COM object
         powerpoint = comtypes.client.CreateObject("Powerpoint.Application")
         powerpoint.Visible = 1
-        
-        # Open presentation and export as PDF (Format 32 = ppSaveAsPDF)
-        deck = powerpoint.Presentations.Open(os.path.abspath(input_path))
-        deck.SaveAs(os.path.abspath(output_path), 32)
-        deck.Close()
-        powerpoint.Quit()
-        
-        return FileResponse(
-            output_path, 
-            media_type="application/pdf", 
-            filename="converted_presentation.pdf"
-        )
+        deck = None
+
+        try:
+            # Open presentation and export as PDF (Format 32 = ppSaveAsPDF)
+            deck = powerpoint.Presentations.Open(os.path.abspath(input_path))
+            deck.SaveAs(os.path.abspath(output_path), 32)
+        finally:
+            # Always close PowerPoint, otherwise a hidden POWERPNT.EXE stays running on errors
+            if deck is not None:
+                deck.Close()
+            powerpoint.Quit()
+
+        return send_file(output_path, "application/pdf", "converted_presentation.pdf")
     except Exception as e:
+        cleanup_file(output_path)
         raise HTTPException(status_code=400, detail=f"PPT conversion error: {str(e)}")
     finally:
-        if os.path.exists(input_path):
-            os.remove(input_path)
-            if os.path.exists(output_path):
-                os.remove(output_path)
+        cleanup_file(input_path)
 
 
 # 9. PDF to PowerPoint (.pptx) Endpoint
@@ -481,141 +543,86 @@ async def convert_pdf_to_pptx(file: UploadFile = File(...)):
     contents = await file.read()
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="File size exceeds the 20MB limit!")
-        
+
     file_id = str(uuid.uuid4())
-    input_path = os.path.join(UPLOAD_DIR, f"{file_id}_{file.filename}")
-    output_filename = f"{file_id}_converted.pptx"
-    output_path = os.path.join(OUTPUT_DIR, output_filename)
-    
+    input_path = make_input_path(file_id, file.filename)
+    output_path = os.path.join(OUTPUT_DIR, f"{file_id}_converted.pptx")
+
     with open(input_path, "wb") as f:
         f.write(contents)
-        
+
     try:
-        doc = fitz.open(input_path)
         prs = Presentation()
         # Set slide dimensions to widescreen (16:9)
         prs.slide_width = Inches(13.333)
         prs.slide_height = Inches(7.5)
-        
-        blank_slide_layout = prs.slide_layouts[6] # Blank layout
-        
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            pix = page.get_pixmap(dpi=150)
-            
-            img_path = os.path.join(UPLOAD_DIR, f"{file_id}_slide_{page_num}.png")
-            pix.save(img_path)
-            
-            # Add slide and insert page image to fit the slide
-            slide = prs.slides.add_slide(blank_slide_layout)
-            slide.shapes.add_picture(img_path, 0, 0, width=prs.slide_width, height=prs.slide_height)
-            
-            # Cleanup temp image
-            if os.path.exists(img_path):
-                os.remove(img_path)
-                if os.path.exists(output_path):
-                    os.remove(output_path)
-                
-        doc.close()
+
+        blank_slide_layout = prs.slide_layouts[6]  # Blank layout
+
+        with fitz.open(input_path) as doc:
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                pix = page.get_pixmap(dpi=150)
+
+                img_path = os.path.join(UPLOAD_DIR, f"{file_id}_slide_{page_num}.png")
+                pix.save(img_path)
+
+                try:
+                    # Add slide and insert page image to fit the slide
+                    slide = prs.slides.add_slide(blank_slide_layout)
+                    slide.shapes.add_picture(img_path, 0, 0, width=prs.slide_width, height=prs.slide_height)
+                finally:
+                    # Cleanup temp image
+                    cleanup_file(img_path)
+
         prs.save(output_path)
-        
-        return FileResponse(
-            output_path, 
-            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation", 
-            filename="converted_presentation.pptx"
-        )
+
+        return send_file(output_path, PPTX_MIME, "converted_presentation.pptx")
     except Exception as e:
+        cleanup_file(output_path)
         raise HTTPException(status_code=400, detail=str(e))
     finally:
-        if os.path.exists(input_path):
-            os.remove(input_path)
-            if os.path.exists(output_path):
-                os.remove(output_path)
-                if os.path.exists(output_path):
-                    os.remove(output_path)
+        cleanup_file(input_path)
 
 # 10. Scan to PDF Endpoint (Enhanced for Scanned Document Look)
 @app.post("/convert/scan-to-pdf")
 async def convert_scan_to_pdf(
     files: list[UploadFile] = File(...),
-    enhance: Optional[bool] = Form(True) # Option to boost contrast for text clarity
+    enhance: Optional[bool] = Form(True)  # Option to boost contrast for text clarity
 ):
     file_id = str(uuid.uuid4())
     saved_image_paths = []
     total_size = 0
-    
+    output_path = None
+
     try:
         for i, file in enumerate(files):
             contents = await file.read()
             total_size += len(contents)
-            
+
             if total_size > MAX_FILE_SIZE:
                 raise HTTPException(status_code=400, detail="Total files size exceeds the 20MB limit!")
-                
-            input_path = os.path.join(UPLOAD_DIR, f"{file_id}_{i}_{file.filename}")
+
+            input_path = make_input_path(file_id, file.filename, i)
             with open(input_path, "wb") as f:
                 f.write(contents)
             saved_image_paths.append(input_path)
-            
-        processed_images = []
-        target_width, target_height = 1240, 1754 # Standard A4 size
-        
-        for path in saved_image_paths:
-            img = Image.open(path)
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-                
-            # Enhance contrast if requested for scanned document clarity
-            if enhance:
-                # Enhance sharpness and contrast so text looks sharp like a real scanner
-                enhancer = ImageEnhance.Contrast(img)
-                img = enhancer.enhance(1.5)
-                
-                sharpness = ImageEnhance.Sharpness(img)
-                img = sharpness.enhance(1.3)
-                
-            # Create A4 white canvas
-            canvas = Image.new("RGB", (target_width, target_height), (255, 255, 255))
-            
-            # Resize image to fit canvas proportionally
-            img.thumbnail((target_width, target_height), Image.Resampling.LANCZOS)
-            
-            # Center the image on canvas
-            x = (target_width - img.width) // 2
-            y = (target_height - img.height) // 2
-            canvas.paste(img, (x, y))
-            
-            processed_images.append(canvas)
-            
-        if not processed_images:
+
+        output_path = os.path.join(OUTPUT_DIR, f"{file_id}_scanned.pdf")
+
+        if not images_to_a4_pdf(saved_image_paths, output_path, enhance=bool(enhance)):
             raise HTTPException(status_code=400, detail="No valid scanned images provided")
-            
-        output_filename = f"{file_id}_scanned.pdf"
-        output_path = os.path.join(OUTPUT_DIR, output_filename)
-        
-        processed_images[0].save(
-            output_path,
-            "PDF",
-            save_all=True,
-            append_images=processed_images[1:]
-        )
-        
-        return FileResponse(
-            output_path, 
-            media_type="application/pdf", 
-            filename="scanned_document.pdf"
-        )
-        
-    except HTTPException as he:
-        raise he
+
+        return send_file(output_path, "application/pdf", "scanned_document.pdf")
+
+    except HTTPException:
+        cleanup_file(output_path)
+        raise
     except Exception as e:
+        cleanup_file(output_path)
         raise HTTPException(status_code=400, detail=str(e))
     finally:
-        for path in saved_image_paths:
-            if os.path.exists(path):
-                os.remove(path)
-                if os.path.exists(output_path):
-                    os.remove(output_path)
+        cleanup_many(saved_image_paths)
 
 # 11. HTML to PDF Endpoint (Using WeasyPrint)
 @app.post("/convert/html-to-pdf")
@@ -623,85 +630,70 @@ async def convert_html_to_pdf(file: UploadFile = File(...)):
     contents = await file.read()
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="File size exceeds the 20MB limit!")
-        
+
     file_id = str(uuid.uuid4())
-    input_path = os.path.join(UPLOAD_DIR, f"{file_id}_{file.filename}")
-    output_filename = f"{file_id}_converted.pdf"
-    output_path = os.path.join(OUTPUT_DIR, output_filename)
-    
-    with open(input_path, "wb") as f:
-        f.write(contents)
-        
+    output_path = os.path.join(OUTPUT_DIR, f"{file_id}_converted.pdf")
+
     try:
-        # Convert HTML file directly to PDF using WeasyPrint
-        HTML(input_path).write_pdf(output_path)
-        
-        return FileResponse(
-            output_path, 
-            media_type="application/pdf", 
-            filename="converted_webpage.pdf"
-        )
+        # Convert uploaded HTML to PDF using WeasyPrint (external/local resources are blocked)
+        HTML(file_obj=io.BytesIO(contents), url_fetcher=safe_url_fetcher).write_pdf(output_path)
+
+        return send_file(output_path, "application/pdf", "converted_webpage.pdf")
     except Exception as e:
+        cleanup_file(output_path)
         raise HTTPException(status_code=400, detail=f"HTML conversion error: {str(e)}")
-    finally:
-        if os.path.exists(input_path):
-            os.remove(input_path)
-            if os.path.exists(output_path):
-                os.remove(output_path)
 
 #12. PDF Translation Endpoint (Sinhala, Tamil, English)
 @app.post("/convert/pdf-translate")
 async def pdf_translate(
     file: UploadFile = File(...),
-    source_lang: str = Form(...), # e.g., 'si', 'ta', 'en'
-    target_lang: str = Form(...)  # e.g., 'en', 'si', 'ta'
+    source_lang: str = Form(...),  # e.g., 'si', 'ta', 'en'
+    target_lang: str = Form(...)   # e.g., 'en', 'si', 'ta'
 ):
     contents = await file.read()
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="File size exceeds the 20MB limit!")
-        
+
     file_id = str(uuid.uuid4())
-    input_path = os.path.join(UPLOAD_DIR, f"{file_id}_{file.filename}")
-    output_filename = f"{file_id}_translated.pdf"
-    output_path = os.path.join(OUTPUT_DIR, output_filename)
-    
+    input_path = make_input_path(file_id, file.filename)
+    output_path = os.path.join(OUTPUT_DIR, f"{file_id}_translated.pdf")
+
     with open(input_path, "wb") as f:
         f.write(contents)
-        
+
     try:
         extracted_text_blocks = []
-        
+
         # 1. Extract text from PDF using pdfplumber
         with pdfplumber.open(input_path) as pdf:
             for page in pdf.pages:
                 text = page.extract_text()
                 if text:
                     extracted_text_blocks.append(text)
-                    
+
         if not extracted_text_blocks:
             raise HTTPException(status_code=400, detail="No readable text found in the PDF!")
-            
+
         full_text = "\n\n".join(extracted_text_blocks)
-        
+
         # 2. Translate text using deep-translator
         # Language codes: 'si' (Sinhala), 'ta' (Tamil), 'en' (English)
         translator = GoogleTranslator(source=source_lang, target=target_lang)
-        
-        # Google translator has character limits per request (~5000 chars), let's chunk if necessary
-        # For simplicity in this demo, let's translate paragraph by paragraph or chunked
+
+        # Google translator has character limits per request (~5000 chars), so chunk the text
         chunks = [full_text[i:i+4500] for i in range(0, len(full_text), 4500)]
         translated_chunks = []
-        
+
         for chunk in chunks:
             translated_text = translator.translate(chunk)
-            translated_chunks.append(translated_text)
-            
+            translated_chunks.append(translated_text or "")
+
         final_translated_text = "\n\n".join(translated_chunks)
-        
+
         # 3. Generate a clean new PDF with the translated text using ReportLab
         doc = SimpleDocTemplate(output_path, pagesize=letter)
         elements = []
-        
+
         styles = getSampleStyleSheet()
         title_style = ParagraphStyle(
             'TransTitle',
@@ -718,29 +710,30 @@ async def pdf_translate(
             textColor=colors.HexColor("#334155"),
             spaceAfter=10
         )
-        
-        elements.append(Paragraph(f"Translated Document ({source_lang.upper()} ➔ {target_lang.upper()})", title_style))
+
+        elements.append(Paragraph(
+            f"Translated Document ({escape(source_lang.upper())} to {escape(target_lang.upper())})",
+            title_style
+        ))
         elements.append(Spacer(1, 10))
-        
+
+        # escape(): ReportLab Paragraph reads XML, so <, > and & in the text would crash it
         for paragraph in final_translated_text.split("\n"):
             if paragraph.strip():
-                elements.append(Paragraph(paragraph.strip(), body_style))
-                
+                elements.append(Paragraph(escape(paragraph.strip()), body_style))
+
         doc.build(elements)
-        
-        return FileResponse(
-            output_path, 
-            media_type="application/pdf", 
-            filename=f"translated_{source_lang}_to_{target_lang}.pdf"
-        )
-        
+
+        return send_file(output_path, "application/pdf", f"translated_{source_lang}_to_{target_lang}.pdf")
+
+    except HTTPException:
+        cleanup_file(output_path)
+        raise
     except Exception as e:
+        cleanup_file(output_path)
         raise HTTPException(status_code=400, detail=f"Translation error: {str(e)}")
     finally:
-        if os.path.exists(input_path):
-            os.remove(input_path)
-            if os.path.exists(output_path):
-                os.remove(output_path)
+        cleanup_file(input_path)
 
 # 13. Organize PDF Pages Endpoint (Reorder Pages)
 @app.post("/convert/organize-pdf")
@@ -751,110 +744,99 @@ async def organize_pdf(
     contents = await file.read()
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="File size exceeds the 20MB limit!")
-        
+
     file_id = str(uuid.uuid4())
-    input_path = os.path.join(UPLOAD_DIR, f"{file_id}_{file.filename}")
-    output_filename = f"{file_id}_organized.pdf"
-    output_path = os.path.join(OUTPUT_DIR, output_filename)
-    
+    input_path = make_input_path(file_id, file.filename)
+    output_path = os.path.join(OUTPUT_DIR, f"{file_id}_organized.pdf")
+
     with open(input_path, "wb") as f:
         f.write(contents)
-        
+
     try:
-        doc = fitz.open(input_path)
-        total_pages = len(doc)
-        
-        # Parse new order string (e.g., "3,1,2" -> [2, 0, 1] for 0-indexed)
-        try:
-            order_indices = []
-            for p in new_order.split(","):
-                p_num = int(p.strip())
-                if 1 <= p_num <= total_pages:
-                    order_indices.append(p_num - 1)
-                else:
-                    raise HTTPException(status_code=400, detail=f"Invalid page number {p}!")
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid page order format! Use comma-separated numbers (e.g., 3,1,2).")
-            
-        if len(order_indices) != total_pages:
-            raise HTTPException(status_code=400, detail=f"You must specify all {total_pages} page numbers in the new order!")
-            
-        # Create a new empty PDF
-        new_doc = fitz.open()
-        
-        # Insert pages in the user's requested order
-        for idx in order_indices:
-            new_doc.insert_pdf(doc, from_page=idx, to_page=idx)
-            
-        new_doc.save(output_path)
-        new_doc.close()
-        doc.close()
-        
-        return FileResponse(
-            output_path, 
-            media_type="application/pdf", 
-            filename="organized_document.pdf"
-        )
-        
-    except HTTPException as he:
-        raise he
+        with fitz.open(input_path) as doc:
+            total_pages = len(doc)
+
+            # Parse new order string (e.g., "3,1,2" -> [2, 0, 1] for 0-indexed)
+            try:
+                order_indices = []
+                for p in new_order.split(","):
+                    p_num = int(p.strip())
+                    if 1 <= p_num <= total_pages:
+                        order_indices.append(p_num - 1)
+                    else:
+                        raise HTTPException(status_code=400, detail=f"Invalid page number {p}!")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid page order format! Use comma-separated numbers (e.g., 3,1,2).")
+
+            if len(order_indices) != total_pages:
+                raise HTTPException(status_code=400, detail=f"You must specify all {total_pages} page numbers in the new order!")
+
+            # Create a new empty PDF
+            new_doc = fitz.open()
+
+            # Insert pages in the user's requested order
+            for idx in order_indices:
+                new_doc.insert_pdf(doc, from_page=idx, to_page=idx)
+
+            new_doc.save(output_path)
+            new_doc.close()
+
+        return send_file(output_path, "application/pdf", "organized_document.pdf")
+
+    except HTTPException:
+        cleanup_file(output_path)
+        raise
     except Exception as e:
+        cleanup_file(output_path)
         raise HTTPException(status_code=400, detail=f"Organize PDF error: {str(e)}")
     finally:
-        if os.path.exists(input_path):
-            os.remove(input_path)
-            if os.path.exists(output_path):
-                os.remove(output_path)
+        cleanup_file(input_path)
 
 @app.post("/convert/merge-pdfs")
 async def merge_pdfs(files: list[UploadFile] = File(...)):
     file_id = str(uuid.uuid4())
     saved_paths = []
     total_size = 0
-    
+    output_path = None
+    merged_doc = None
+
     try:
         # Create an empty master PDF document for merging
         merged_doc = fitz.open()
-        
+
         for i, file in enumerate(files):
             contents = await file.read()
             total_size += len(contents)
-            
+
             if total_size > MAX_FILE_SIZE:
                 raise HTTPException(status_code=400, detail="Total files size exceeds the 20MB limit!")
-                
-            input_path = os.path.join(UPLOAD_DIR, f"{file_id}_{i}_{file.filename}")
+
+            input_path = make_input_path(file_id, file.filename, i)
             with open(input_path, "wb") as f:
                 f.write(contents)
             saved_paths.append(input_path)
-            
+
             # Open each PDF and append its pages to the master merged document
             with fitz.open(input_path) as doc:
                 merged_doc.insert_pdf(doc)
-                
-        output_filename = f"{file_id}_merged.pdf"
-        output_path = os.path.join(OUTPUT_DIR, output_filename)
-        
+
+        output_path = os.path.join(OUTPUT_DIR, f"{file_id}_merged.pdf")
+
         merged_doc.save(output_path)
-        merged_doc.close()
-        
-        return FileResponse(
-            output_path, 
-            media_type="application/pdf", 
-            filename="merged_document.pdf"
-        )
-        
-    except HTTPException as he:
-        raise he
+
+        return send_file(output_path, "application/pdf", "merged_document.pdf")
+
+    except HTTPException:
+        cleanup_file(output_path)
+        raise
     except Exception as e:
+        cleanup_file(output_path)
         raise HTTPException(status_code=400, detail=f"Merge PDFs error: {str(e)}")
     finally:
+        if merged_doc is not None:
+            merged_doc.close()
         # Cleanup temporary input files
-        for path in saved_paths:
-            if os.path.exists(path):
-                os.remove(path)
-                if os.path.exists(output_path):
-                    os.remove(output_path)
+        cleanup_many(saved_paths)
 
 # 14. Split PDF into Multiple Parts Endpoint (With Download Links)
 @app.post("/convert/split-pdf-links")
@@ -862,91 +844,164 @@ async def split_pdf_links(
     file: UploadFile = File(...),
     split_ranges: str = Form(...)  # e.g., "1-3, 4-6" or individual pages
 ):
+    sweep_old_files()
+
     contents = await file.read()
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="Total files size exceeds the 20MB limit!")
-        
+
     file_id = str(uuid.uuid4())
-    input_path = os.path.join(UPLOAD_DIR, f"{file_id}_{file.filename}")
-    
+    input_path = make_input_path(file_id, file.filename)
+
     with open(input_path, "wb") as f:
         f.write(contents)
-        
+
     response_links = []
     split_pdf_paths = []
-    
+    zip_path = None
+
     try:
-        doc = fitz.open(input_path)
-        total_pages = len(doc)
-        
-        # Parse ranges like "1-3, 4-5" or comma-separated numbers
-        ranges = [r.strip() for r in split_ranges.split(",")]
-        
-        for i, rng in enumerate(ranges):
-            sub_doc = fitz.open()
-            
-            if "-" in rng:
-                start_p, end_p = map(int, rng.split("-"))
-                start_idx = max(0, start_p - 1)
-                end_idx = min(total_pages - 1, end_p - 1)
-                sub_doc.insert_pdf(doc, from_page=start_idx, to_page=end_idx)
-                part_name = f"Part_{i+1}_Pages_{start_p}_to_{end_p}.pdf"
-            else:
-                p_num = int(rng)
-                idx = p_num - 1
-                if 0 <= idx < total_pages:
-                    sub_doc.insert_pdf(doc, from_page=idx, to_page=idx)
-                    part_name = f"Part_{i+1}_Page_{p_num}.pdf"
-                else:
-                    continue
-                    
-            part_filename = f"{file_id}_{part_name}"
-            part_path = os.path.join(OUTPUT_DIR, part_filename)
-            sub_doc.save(part_path)
-            sub_doc.close()
-            split_pdf_paths.append((part_path, part_name))
-            
-            # Add individual download URL
-            response_links.append({
-                "title": f"Part {i+1} ({rng})",
-                "filename": part_name,
-                "url": f"http://localhost:8000/download-file/{part_filename}"
-            })
-            
-        doc.close()
-        
+        with fitz.open(input_path) as doc:
+            total_pages = len(doc)
+
+            # Parse ranges like "1-3, 4-5" or comma-separated numbers
+            ranges = [r.strip() for r in split_ranges.split(",")]
+
+            for i, rng in enumerate(ranges):
+                try:
+                    if "-" in rng:
+                        start_p, end_p = map(int, rng.split("-"))
+                        from_idx = max(0, start_p - 1)
+                        to_idx = min(total_pages - 1, end_p - 1)
+                        part_name = f"Part_{i+1}_Pages_{start_p}_to_{end_p}.pdf"
+                    else:
+                        p_num = int(rng)
+                        if not (1 <= p_num <= total_pages):
+                            continue
+                        from_idx = to_idx = p_num - 1
+                        part_name = f"Part_{i+1}_Page_{p_num}.pdf"
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=f"Invalid split range '{rng}'! Use e.g. 1-3, 5")
+
+                part_filename = f"{file_id}_{part_name}"
+                part_path = os.path.join(OUTPUT_DIR, part_filename)
+
+                sub_doc = fitz.open()
+                sub_doc.insert_pdf(doc, from_page=from_idx, to_page=to_idx)
+                sub_doc.save(part_path)
+                sub_doc.close()
+                split_pdf_paths.append((part_path, part_name))
+
+                # Add individual download URL
+                response_links.append({
+                    "title": f"Part {i+1} ({rng})",
+                    "filename": part_name,
+                    "url": f"{BASE_URL}/download-file/{part_filename}"
+                })
+
         if not response_links:
             raise HTTPException(status_code=400, detail="Invalid split ranges provided!")
-            
-        # Optional: Bundle all into a ZIP file for a "Download All" option if needed
+
+        # Bundle all into a ZIP file for a "Download All" option
         zip_filename = f"{file_id}_all_parts.zip"
         zip_path = os.path.join(OUTPUT_DIR, zip_filename)
         with zipfile.ZipFile(zip_path, 'w') as zipf:
             for path, name in split_pdf_paths:
                 zipf.write(path, arcname=name)
-                
-        all_download_url = f"http://localhost:8000/download-file/{zip_filename}"
-        
+
+        all_download_url = f"{BASE_URL}/download-file/{zip_filename}"
+
+        # The parts + ZIP must stay on disk so the links work (old files are swept after 1 hour)
         return {
-            "status": "success", 
+            "status": "success",
             "parts": response_links,
             "download_all_url": all_download_url
         }
-        
+
+    except HTTPException:
+        cleanup_many([p for p, _ in split_pdf_paths])
+        cleanup_file(zip_path)
+        raise
     except Exception as e:
+        cleanup_many([p for p, _ in split_pdf_paths])
+        cleanup_file(zip_path)
         raise HTTPException(status_code=400, detail=str(e))
     finally:
-        if os.path.exists(input_path):
-            os.remove(input_path)
-            if os.path.exists(zip_path):
-                os.remove(zip_path)
+        cleanup_file(input_path)
 
 # Serve individual or zip generated files
 @app.get("/download-file/{filename}")
 async def download_file(filename: str):
-    file_path = os.path.join(OUTPUT_DIR, filename)
-    if os.path.exists(file_path):
+    # Block path tricks like "..\\main.py" (backslash works as a separator on Windows)
+    safe_name = os.path.basename(filename.replace("\\", "/"))
+    if safe_name != filename:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    file_path = os.path.join(OUTPUT_DIR, safe_name)
+    if os.path.isfile(file_path):
         # Clean up internal uuid prefix for the actual downloaded filename
-        clean_name = filename.split("_", 1)[1] if "_" in filename else filename
+        clean_name = safe_name.split("_", 1)[1] if "_" in safe_name else safe_name
         return FileResponse(file_path, filename=clean_name)
     raise HTTPException(status_code=404, detail="File not found")
+
+# 15. Compress PDF Endpoint (With User Authentication for Large Files)
+@app.post("/convert/compress-pdf")
+async def compress_pdf(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    has_paid_micro_fee: bool = Form(False),
+    user: Optional[dict] = Depends(verify_firebase_token)
+):
+    contents = await file.read()
+    file_size = len(contents)
+    await file.seek(0)
+
+    max_free_bytes = 25 * 1024 * 1024  # 25MB සීමාව
+
+    # 1. 25MB සීමාව පැනලා නම් ලොගින් වීම පරීක්ෂා කිරීම
+    if file_size > max_free_bytes:
+        if not user:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error_code": "LOGIN_REQUIRED_FOR_LARGE_FILES",
+                    "message": "25MB ට වැඩි ගොනු කොම්ප්‍රෙස් කිරීමට කරුණාකර ඔබගේ ගිණුමට ලොග් වන්න."
+                }
+            )
+
+        is_pro = user.get("is_pro", False)
+        validate_file_size(
+            file_size=file_size,
+            is_pro=is_pro,
+            has_paid_micro_fee=has_paid_micro_fee,
+            max_size_mb=25
+        )
+
+    # 2. PDF Header (Magic Number) Validation
+    await validate_file_header(file, allowed_types=["pdf"])
+
+    # 3. ආරක්ෂිතව ෆයිල් එක සේව් කිරීම
+    safe_name = generate_safe_filename(file.filename)
+    input_path = os.path.join(UPLOAD_DIR, safe_name)
+
+    with open(input_path, "wb") as buffer:
+        buffer.write(contents)
+
+    background_tasks.add_task(cleanup_file, input_path)
+
+    output_filename = f"compressed_{safe_name}"
+    output_path = os.path.join(OUTPUT_DIR, output_filename)
+
+    try:
+        # PyMuPDF මඟින් PDF එක Compress කිරීම
+        with fitz.open(input_path) as doc:
+            doc.save(output_path, garbage=4, deflate=True, clean=True)
+
+        # Response යැවුණාට පස්සේ ෆයිල්ස් ස්වයංක්‍රීයව delete වීමට
+        background_tasks.add_task(cleanup_file, output_path)
+
+        return FileResponse(output_path, filename=f"compressed_{file.filename}")
+
+    except Exception as e:
+        cleanup_many([input_path, output_path])
+        raise HTTPException(status_code=500, detail=f"PDF Compression failed: {str(e)}")
