@@ -1,6 +1,6 @@
 import os
 import uuid
-from fastapi import HTTPException, UploadFile
+from fastapi import HTTPException, UploadFile  # pyright: ignore[reportMissingImports]
 
 # Uploads සහ Outputs folders නිර්මාණය කරගැනීම
 UPLOAD_DIR = "uploads"
@@ -33,7 +33,7 @@ async def validate_file_header(file: UploadFile, allowed_types: list = ["pdf", "
         
     # Image Headers Check (PNG, JPEG, WEBP)
     if "image" in allowed_types:
-        if header.startswith(b'\x89PNG\r\n\x1a\n') or header.startswith(b'\xff\xd8\xff') or header.startswith(b'RIFF') and header[8:12] == b'WEBP':
+        if header.startswith(b'\x89PNG\r\n\x1a\n') or header.startswith(b'\xff\xd8\xff') or (header.startswith(b'RIFF') and header[8:12] == b'WEBP'):
             return True
 
     # Office Documents (ZIP-based: docx, xlsx, pptx start with PK..)
