@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cloud File Converter - Testing UI</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col items-center justify-center p-4">
+
+    <div class="max-w-xl w-full bg-slate-800 p-8 rounded-2xl shadow-2xl border border-slate-700">
+        <h1 class="text-3xl font-bold text-center mb-1 bg-gradient-to-r from-blue-400 to-indigo-500 bg-clip-text text-transparent">Cloud File Converter</h1>
+        <p class="text-slate-400 text-center text-sm mb-6">All-in-One Testing UI (Max 20MB Limit)</p>
+
+        <!-- Conversion Mode Selector -->
+        <div class="mb-5">
+            <label class="block text-sm font-semibold text-slate-300 mb-2">1. Select Conversion Type:</label>
+            <select id="conversion-mode" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-slate-100 focus:outline-none focus:border-blue-500">
+                <option value="image">Image to Image (PNG / JPG / WEBP)</option>
+                <option value="images-to-pdf">Multiple Images to Single PDF</option>
+                <option value="pdf-to-word">PDF to Word (.docx)</option>
+                <option value="word-to-pdf">Word (.docx) to PDF</option>
+                <option value="excel-to-pdf">Excel (.xlsx) to PDF</option>
+                <option value="pdf-to-excel">PDF to Excel (.xlsx)</option>
+                <option value="html-to-pdf">HTML to PDF</option>
+                <option value="pdf-to-images">PDF to Images (All or Specific Pages)</option>
+                <option value="pptx-to-pdf">PowerPoint (.pptx) to PDF</option>
+                <option value="pdf-to-pptx">PDF to PowerPoint (.pptx)</option>
+                <option value="scan-to-pdf">Scanned Document to PDF</option>
+                <option value="pdf-translate">PDF Translator (Sinhala, Tamil, English)</option>
+                <option value="organize-pdf">Organize PDF Pages (Reorder)</option>
+                <option value="merge-pdfs">Merge Multiple PDFs into One</option>
+            </select>
+        </div>
+
+        <!-- Target Format Selector (Only visible for Image-to-Image) -->
+        <div id="image-format-box" class="mb-5">
+            <label class="block text-sm font-semibold text-slate-300 mb-2">2. Target Image Format:</label>
+            <select id="target-format" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-slate-100 focus:outline-none focus:border-blue-500">
+                <option value="PNG">PNG</option>
+                <option value="JPEG">JPEG / JPG</option>
+                <option value="WEBP">WEBP</option>
+            </select>
+        </div>
+
+        <!-- Dropzone -->
+        <div id="drop-zone" class="border-2 border-dashed border-slate-600 rounded-xl p-8 text-center cursor-pointer hover:border-blue-500 transition bg-slate-900/50 mb-6">
+            <input type="file" id="file-input" class="hidden" accept="image/*">
+            <p id="file-label" class="text-slate-300 font-medium">Drag & drop file(s) here, or <span class="text-blue-400 underline">browse</span></p>
+            <p id="file-sublabel" class="text-xs text-slate-500 mt-1">Supports PNG, JPG, WEBP (Max 20MB)</p>
+        </div>
+
+        <!-- Convert Button -->
+        <button id="convert-btn" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 rounded-xl transition shadow-lg disabled:opacity-50" disabled>
+            Convert File
+        </button>
+
+        <!-- Error Message Box -->
+        <div id="error-box" class="mt-4 hidden bg-red-900/50 border border-red-500 text-red-200 px-4 py-3 rounded-lg text-sm text-center"></div>
+
+        <!-- Result Section -->
+        <div id="result-section" class="mt-6 hidden text-center bg-slate-900/80 p-4 rounded-xl border border-emerald-700/50">
+            <p class="text-green-400 font-semibold mb-3">Conversion Successful! 🎉</p>
+            <a id="download-link" class="inline-block bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-6 py-2.5 rounded-lg transition shadow" download>
+                Download Converted File
+            </a>
+        </div>
+
+        <!-- Page Order Input Box (Only visible for Organize PDF) -->
+        <div id="organize-options-box" class="mb-5 hidden">
+            <label class="block text-sm font-semibold text-slate-300 mb-2">New Page Order:</label>
+            <input type="text" id="page-order" placeholder="e.g., 3, 1, 2 (Enter new sequence)" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-slate-100 focus:outline-none focus:border-blue-500 text-sm">
+            <p class="text-xs text-slate-400 mt-1">Type the desired page sequence separated by commas.</p>
+        </div>
+
+        <!-- Language Selection Box (Only visible for PDF Translate) -->
+        <div id="translate-options-box" class="mb-5 hidden grid grid-cols-2 gap-4">
+            <div>
+                <label class="block text-sm font-semibold text-slate-300 mb-2">From Language:</label>
+                <select id="source-lang" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-slate-100 focus:outline-none focus:border-blue-500 text-sm">
+                    <option value="si">Sinhala (සිංහල)</option>
+                    <option value="ta">Tamil (தமிழ்)</option>
+                    <option value="en">English</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm font-semibold text-slate-300 mb-2">To Language:</label>
+                <select id="target-lang" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-slate-100 focus:outline-none focus:border-blue-500 text-sm">
+                    <option value="en">English</option>
+                    <option value="si">Sinhala (සිංහල)</option>
+                    <option value="ta">Tamil (தமிழ்)</option>
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const conversionMode = document.getElementById('conversion-mode');
+        const imageFormatBox = document.getElementById('image-format-box');
+        const targetFormat = document.getElementById('target-format');
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+        const fileLabel = document.getElementById('file-label');
+        const fileSublabel = document.getElementById('file-sublabel');
+        const convertBtn = document.getElementById('convert-btn');
+        const errorBox = document.getElementById('error-box');
+        const resultSection = document.getElementById('result-section');
+        const downloadLink = document.getElementById('download-link');
+        const translateOptionsBox = document.getElementById('translate-options-box');
+        const sourceLang = document.getElementById('source-lang');
+        const targetLang = document.getElementById('target-lang');
+
+        // Inside change listener:
+        translateOptionsBox.classList.add('hidden');
+        if (mode === 'pdf-translate') {
+            translateOptionsBox.classList.remove('hidden');
+            fileInput.accept = '.pdf,application/pdf';
+            fileInput.multiple = false;
+            fileSublabel.textContent = 'Select a PDF file to translate (Max 20MB)';
+        }
+
+        const MAX_SIZE = 20 * 1024 * 1024; // 20MB
+        let selectedFiles = [];
+
+        function resetUI() {
+            selectedFiles = [];
+            fileInput.value = '';
+            convertBtn.disabled = true;
+            resultSection.classList.add('hidden');
+            errorBox.classList.add('hidden');
+            fileLabel.innerHTML = `Drag & drop file(s) here, or <span class="text-blue-400 underline">browse</span>`;
+        }
+
+        // Update UI based on selected conversion mode
+        conversionMode.addEventListener('change', () => {
+            resetUI();
+            const mode = conversionMode.value;
+
+            if (mode === 'image') {
+                imageFormatBox.classList.remove('hidden');
+                fileInput.accept = 'image/*';
+                fileInput.multiple = false;
+                fileSublabel.textContent = 'Select a single image (PNG, JPG, WEBP - Max 20MB)';
+            } else if (mode === 'images-to-pdf') {
+                imageFormatBox.classList.add('hidden');
+                fileInput.accept = 'image/*';
+                fileInput.multiple = true;
+                fileSublabel.textContent = 'Select multiple images to merge into 1 PDF (Total Max 20MB)';
+            } else if (mode === 'pdf-to-word') {
+                imageFormatBox.classList.add('hidden');
+                fileInput.accept = '.pdf,application/pdf';
+                fileInput.multiple = false;
+                fileSublabel.textContent = 'Select a PDF file (Max 20MB)';
+            } else if (mode === 'word-to-pdf') {
+                imageFormatBox.classList.add('hidden');
+                fileInput.accept = '.doc,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+                fileInput.multiple = false;
+                fileSublabel.textContent = 'Select a Word document (.docx - Max 20MB)';
+            }else if (mode === 'excel-to-pdf') {
+                imageFormatBox.classList.add('hidden');
+                fileInput.accept = '.xls,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+                fileInput.multiple = false;
+                fileSublabel.textContent = 'Select an Excel file (.xlsx - Max 20MB)';
+            }
+            else if (mode === 'pdf-to-excel') {
+                imageFormatBox.classList.add('hidden');
+                fileInput.accept = '.pdf,application/pdf';
+                fileInput.multiple = false;
+                fileSublabel.textContent = 'Select a PDF with tables (Max 20MB)';
+            }
+            else if (mode === 'pdf-to-images') {
+                pageInputBox.classList.remove('hidden');
+                fileInput.accept = '.pdf,application/pdf';
+                fileInput.multiple = false;
+                fileSublabel.textContent = 'Select a PDF file (Max 20MB)';
+            }
+            else if (mode === 'pptx-to-pdf') {
+                imageFormatBox.classList.add('hidden');
+                fileInput.accept = '.pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation';
+                fileInput.multiple = false;
+                fileSublabel.textContent = 'Select a PowerPoint file (.pptx - Max 20MB)';
+            }
+            else if (mode === 'pdf-to-pptx') {
+                imageFormatBox.classList.add('hidden');
+                fileInput.accept = '.pdf,application/pdf';
+                fileInput.multiple = false;
+                fileSublabel.textContent = 'Select a PDF file (Max 20MB)';
+            }
+            else if (mode === 'scan-to-pdf') {
+                imageFormatBox.classList.add('hidden');
+                fileInput.accept = 'image/*';
+                fileInput.multiple = true;
+                fileSublabel.textContent = 'Select scanned images to convert into a single PDF (Total Max 20MB)';
+            }
+            else if (mode === 'html-to-pdf') {
+                imageFormatBox.classList.add('hidden');
+                fileInput.accept = '.html,.htm,text/html';
+                fileInput.multiple = false;
+                fileSublabel.textContent = 'Select an HTML file (Max 20MB)';
+            }
+            else if (mode === 'pdf-translate') {
+                imageFormatBox.classList.add('hidden');
+                translateOptionsBox.classList.remove('hidden');
+                fileInput.accept = '.pdf,application/pdf';
+                fileInput.multiple = false;
+                fileSublabel.textContent = 'Select a PDF file to translate (Max 20MB)';
+            }
+            else if (mode === 'organize-pdf') {
+                imageFormatBox.classList.add('hidden');
+                organizeOptionsBox.classList.remove('hidden');
+                fileInput.accept = '.pdf,application/pdf';
+                fileInput.multiple = false;
+                fileSublabel.textContent = 'Select a PDF file to reorder pages (Max 20MB)';
+            }
+            else if (mode === 'merge-pdfs') {
+                imageFormatBox.classList.add('hidden');
+                fileInput.accept = '.pdf,application/pdf';
+                fileInput.multiple = true;
+                fileSublabel.textContent = 'Select multiple PDF files to merge (Total Max 20MB)';
+            }
+            else {
+                imageFormatBox.classList.add('hidden');
+                fileInput.accept = '';
+                fileInput.multiple = false;
+                fileSublabel.textContent = 'Select a file (Max 20MB)';
+            }
+        });
+
+        function handleFiles(files) {
+            errorBox.classList.add('hidden');
+            resultSection.classList.add('hidden');
+            
+            const fileArray = Array.from(files);
+            if (fileArray.length === 0) return;
+
+            // Check 20MB limit on frontend
+            const totalSize = fileArray.reduce((acc, f) => acc + f.size, 0);
+            if (totalSize > MAX_SIZE) {
+                errorBox.textContent = `Size limit exceeded! Selected files are ${(totalSize / (1024 * 1024)).toFixed(2)}MB (Max allowed: 20MB).`;
+                errorBox.classList.remove('hidden');
+                selectedFiles = [];
+                convertBtn.disabled = true;
+                return;
+            }
+
+            selectedFiles = fileArray;
+            if (selectedFiles.length === 1) {
+                fileLabel.textContent = `Selected: ${selectedFiles[0].name} (${(totalSize / (1024 * 1024)).toFixed(2)} MB)`;
+            } else {
+                fileLabel.textContent = `Selected: ${selectedFiles.length} files (Total: ${(totalSize / (1024 * 1024)).toFixed(2)} MB)`;
+            }
+            convertBtn.disabled = false;
+        }
+
+        dropZone.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('border-blue-500');
+        });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('border-blue-500'));
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('border-blue-500');
+            handleFiles(e.dataTransfer.files);
+        });
+
+        convertBtn.addEventListener('click', async () => {
+            if (selectedFiles.length === 0) return;
+
+            const mode = conversionMode.value;
+            const formData = new FormData();
+            let endpoint = '';
+            let outputFilename = '';
+
+            if (mode === 'image') {
+                endpoint = 'http://localhost:8000/convert/image';
+                formData.append('file', selectedFiles[0]);
+                formData.append('target_format', targetFormat.value);
+                outputFilename = `converted_image.${targetFormat.value.toLowerCase()}`;
+            } else if (mode === 'images-to-pdf') {
+                endpoint = 'http://localhost:8000/convert/images-to-pdf';
+                selectedFiles.forEach(file => formData.append('files', file));
+                outputFilename = 'merged_images.pdf';
+            } else if (mode === 'pdf-to-word') {
+                endpoint = 'http://localhost:8000/convert/pdf-to-word';
+                formData.append('file', selectedFiles[0]);
+                outputFilename = 'converted_document.docx';
+            } else if (mode === 'word-to-pdf') {
+                endpoint = 'http://localhost:8000/convert/word-to-pdf';
+                formData.append('file', selectedFiles[0]);
+                outputFilename = 'converted_document.pdf';
+            }else if (mode === 'excel-to-pdf') {
+                endpoint = 'http://localhost:8000/convert/excel-to-pdf';
+                formData.append('file', selectedFiles[0]);
+                outputFilename = 'converted_spreadsheet.pdf';
+            } else if (mode === 'merge-pdfs') {
+                endpoint = 'http://localhost:8000/convert/merge-pdfs';
+                selectedFiles.forEach(file => formData.append('files', file));
+                outputFilename = 'merged_document.pdf';
+            }
+            else if (mode === 'organize-pdf') {
+                endpoint = 'http://localhost:8000/convert/organize-pdf';
+                formData.append('file', selectedFiles[0]);
+                outputFilename = 'organized_document.pdf';
+            }
+            else if (mode === 'pdf-to-excel') {
+                endpoint = 'http://localhost:8000/convert/pdf-to-excel';
+                fileInput.accept = '.pdf,application/pdf';
+                fileInput.multiple = false;
+                fileSublabel.textContent = 'Select a PDF with tables (Max 20MB)';
+                outputFilename = 'converted_table.xlsx';
+            } else if (mode === 'pdf-to-images') {
+                endpoint = 'http://localhost:8000/convert/pdf-to-images';
+                fileInput.accept = '.pdf,application/pdf';
+                fileInput.multiple = false;
+                fileSublabel.textContent = 'Select a PDF file (Max 20MB)';
+                outputFilename = 'converted_images.zip';
+            }
+            else if (mode === 'pptx-to-pdf') {
+                endpoint = 'http://localhost:8000/convert/pptx-to-pdf';
+                formData.append('file', selectedFiles[0]);
+                outputFilename = 'converted_presentation.pdf';
+            } else if (mode === 'pdf-to-pptx') {
+                endpoint = 'http://localhost:8000/convert/pdf-to-pptx';
+                formData.append('file', selectedFiles[0]);
+                outputFilename = 'converted_presentation.pptx';
+            } else if (mode === 'scan-to-pdf') {
+                endpoint = 'http://localhost:8000/convert/scan-to-pdf';
+                selectedFiles.forEach(file => formData.append('files', file));
+                outputFilename = 'scanned_document.pdf';
+            } else if (mode === 'html-to-pdf') {
+                endpoint = 'http://localhost:8000/convert/html-to-pdf';
+                formData.append('file', selectedFiles[0]);
+                outputFilename = 'converted_webpage.pdf';
+            } else if (mode === 'pdf-translate') {
+                endpoint = 'http://localhost:8000/convert/pdf-translate';
+                formData.append('file', selectedFiles[0]);
+                formData.append('source_lang', sourceLang.value);
+                formData.append('target_lang', targetLang.value);
+                outputFilename = 'translated_document.pdf';
+            }
+            else {
+                errorBox.textContent = "Unsupported conversion mode selected.";
+                errorBox.classList.remove('hidden');
+                return;
+            }
+            convertBtn.textContent = "Converting... Please wait";
+            convertBtn.disabled = true;
+            errorBox.classList.add('hidden');
+            resultSection.classList.add('hidden');
+
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const errData = await response.json();
+                    throw new Error(errData.detail || "Conversion failed");
+                }
+
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+
+                downloadLink.href = url;
+                downloadLink.download = outputFilename;
+                resultSection.classList.remove('hidden');
+            } catch (err) {
+                errorBox.textContent = "Error: " + err.message;
+                errorBox.classList.remove('hidden');
+            } finally {
+                convertBtn.textContent = "Convert File";
+                convertBtn.disabled = false;
+            }
+        });
+
+        // Frontend fetch error handling example
+        fetch(endpoint, {
+            method: 'POST',
+            body: formData
+        })
+        .then(async response => {
+            if (!response.ok) {
+                const errorData = await response.json();
+                
+                // Check if it's a size limit error
+                if (response.status === 402) {
+                    showUpgradeModal(errorData.detail.message, errorData.detail.suggestion);
+                    return;
+                }
+                alert('Error: ' + (errorData.detail?.message || errorData.detail));
+                return;
+            }
+            return response.blob();
+        })
+    </script>
+</body>
+</html>

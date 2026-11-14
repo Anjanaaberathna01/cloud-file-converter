@@ -1,0 +1,7 @@
+backend/firebase_secret.json
+.env
+uploads/
+outputs/
+venv/
+__pycache__/
+.venv/
