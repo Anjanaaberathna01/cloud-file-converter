@@ -24,7 +24,7 @@ from PIL import ImageEnhance  # pyright: ignore[reportMissingImports]
 from weasyprint import HTML  # pyright: ignore[reportMissingImports]
 from deep_translator import GoogleTranslator  # pyright: ignore[reportMissingImports]
 from utils.security import validate_file_size, validate_pdf_file, cleanup_file
-from routers import payment
+from routers import payment, file_tools
 
 
 
@@ -53,7 +53,7 @@ def read_root():
 
 # Include the payment router for handling mock payments and PayHere integration
 app.include_router(payment.router, prefix="/api/payment", tags=["Payment & Mock Checkout"])
-
+app.include_router(file_tools.router, prefix="/api", tags=["File Conversion & Tools"])
 
 # Generic Conversion Endpoint (Micro-Payment & Size Check using security.py)
 @app.post("/convert/generic-conversion")
