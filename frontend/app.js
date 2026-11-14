@@ -37,7 +37,7 @@ let toastT;
 function toast(m) { const t = $("#toast"); t.textContent = m; t.classList.add("on"); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("on"), 2600); }
 
 function sheet(title, html) {
-  $("#sheet").innerHTML = `<div class="top"><button class="ic" data-x aria-label="Back">←</button><b>${esc(title)}</b></div><div class="body">${html}</div>`;
+  $("#sheet").innerHTML = `<div class="panel"><div class="top"><button class="ic" data-x aria-label="Close">←</button><b>${esc(title)}</b></div><div class="body">${html}</div></div>`;
   $("#sheet").classList.add("on"); $("#sheet").scrollTop = 0;
 }
 const closeSheet = () => { $("#sheet").classList.remove("on"); renderRecent(); };
@@ -155,7 +155,7 @@ function quickPick(file) {
 }
 
 document.addEventListener("click", e => {
-  if (e.target.closest("[data-x]")) return closeSheet();
+  if (e.target.closest("[data-x]") || e.target.id === "sheet") return closeSheet();
   const t = e.target.closest("[data-id]");
   if (t) { const tool = TOOLS[+t.dataset.id]; openTool(tool, window.picked && tool.acc.includes("." + window.picked.name.split(".").pop().toLowerCase()) ? window.picked : null); window.picked = null; }
 });
@@ -164,5 +164,7 @@ $("#quick").onclick = () => $("#qf").click();
 $("#qf").onchange = e => { if (e.target.files[0]) quickPick(e.target.files[0]); e.target.value = ""; };
 $("#goBatch").onclick = () => sheet("Batch conversions", `<p>Work with many files in one go.</p><div class="grid" style="padding:0">${TOOLS.filter(t => t.b).map(tile).join("")}</div>`);
 $("#goHist").onclick = $("#menu").onclick = openHistory;
+$("#navBatch").onclick = () => $("#goBatch").click();
+document.addEventListener("keydown", e => e.key === "Escape" && closeSheet());
 $("#pro").onclick = openPro;
 renderRecent();
