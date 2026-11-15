@@ -22,7 +22,7 @@ from reportlab.lib import colors  # pyright: ignore[reportMissingImports, report
 from typing import Optional
 from pptx import Presentation  # pyright: ignore[reportMissingImports]
 from pptx.util import Inches  # pyright: ignore[reportMissingImports]
-from weasyprint import HTML, default_url_fetcher  # pyright: ignore[reportMissingImports]
+#from weasyprint import HTML, default_url_fetcher  # pyright: ignore[reportMissingImports]
 from deep_translator import GoogleTranslator  # pyright: ignore[reportMissingImports]
 
 # comtypes works only on Windows (MS Office). Don't crash the whole app on other OS.
@@ -625,24 +625,26 @@ async def convert_scan_to_pdf(
     finally:
         cleanup_many(saved_image_paths)
 
-# 11. HTML to PDF Endpoint (Using WeasyPrint)
-@app.post("/convert/html-to-pdf")
-async def convert_html_to_pdf(file: UploadFile = File(...)):
-    contents = await file.read()
-    if len(contents) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail="File size exceeds the 20MB limit!")
+# 11. HTML to PDF Endpoint (Using WeasyPrint) - Temporarily Disabled
+# @app.post("/convert/html-to-pdf")
+# async def convert_html_to_pdf(file: UploadFile = File(...)):
+#     contents = await file.read()
+#     if len(contents) > MAX_FILE_SIZE:
+#         raise HTTPException(status_code=400, detail="File size exceeds the 20MB limit!")
+# 
+#     file_id = str(uuid.uuid4())
+#     output_path = os.path.join(OUTPUT_DIR, f"{file_id}_converted.pdf")
+# 
+#     try:
+#         # Convert uploaded HTML to PDF using WeasyPrint (external/local resources are blocked)
+#         # HTML(file_obj=io.BytesIO(contents), url_fetcher=safe_url_fetcher).write_pdf(output_path)
+# 
+#         # return send_file(output_path, "application/pdf", "converted_webpage.pdf")
+#         pass
+#     except Exception as e:
+#         cleanup_file(output_path)
+#         raise HTTPException(status_code=400, detail=f"HTML conversion error: {str(e)}")
 
-    file_id = str(uuid.uuid4())
-    output_path = os.path.join(OUTPUT_DIR, f"{file_id}_converted.pdf")
-
-    try:
-        # Convert uploaded HTML to PDF using WeasyPrint (external/local resources are blocked)
-        HTML(file_obj=io.BytesIO(contents), url_fetcher=safe_url_fetcher).write_pdf(output_path)
-
-        return send_file(output_path, "application/pdf", "converted_webpage.pdf")
-    except Exception as e:
-        cleanup_file(output_path)
-        raise HTTPException(status_code=400, detail=f"HTML conversion error: {str(e)}")
 
 #12. PDF Translation Endpoint (Sinhala, Tamil, English)
 @app.post("/convert/pdf-translate")
