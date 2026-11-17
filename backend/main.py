@@ -22,7 +22,7 @@ from reportlab.lib import colors  # pyright: ignore[reportMissingImports, report
 from typing import Optional
 from pptx import Presentation  # pyright: ignore[reportMissingImports]
 from pptx.util import Inches  # pyright: ignore[reportMissingImports]
-from weasyprint import default_url_fetcher  # pyright: ignore[reportMissingImports]
+#from weasyprint import default_url_fetcher  # pyright: ignore[reportMissingImports]
 from deep_translator import GoogleTranslator  # pyright: ignore[reportMissingImports]
 from reportlab.pdfbase import pdfmetrics  # pyright: ignore[reportMissingImports, reportMissingModuleSource]
 from reportlab.pdfbase.ttfonts import TTFont  # pyright: ignore[reportMissingImports, reportMissingModuleSource]
