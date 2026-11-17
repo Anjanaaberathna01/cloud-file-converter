@@ -682,25 +682,30 @@ async def pdf_translate(
         full_text = "\n\n".join(extracted_text_blocks)
 
         # 2. Translate text using deep-translator (with batching & rate-limit protection)
+
         translator = GoogleTranslator(source=source_lang, target=target_lang)
 
-        # Split text into manageable chunks
-        chunks = [full_text[i:i+4000] for i in range(0, len(full_text), 4000)]
+        # Split text into small chunks (around 1000-2000 characters per chunk)
+        chunks = [full_text[i:i+1500] for i in range(0, len(full_text), 1500)]
         translated_chunks = []
-        batch_size = 3
-        
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i:i + batch_size]
-            batch_results = translator.translate_batch(batch)
-            translated_chunks.extend([res or "" for res in batch_results])
 
-            # Rate limit මඟහරවා ගැනීමට තත්පර 1.2ක විවේකයක්
-            if i + batch_size < len(chunks):
+        for chunk in chunks:
+            if chunk.strip():
+                try:
+
+                    res = translator.translate(chunk)
+                    translated_chunks.append(res or "")
+                except Exception as ex:
+                    # මොකක් හෝ රික්වෙස්ට් ප්‍රශ්නයක් ආවොත් තත්පර 2ක් ඉඳලා ආපහු ට්‍රයි කරන්න පුළුවන්
+                    time.sleep(2)
+                    res = translator.translate(chunk)
+                    translated_chunks.append(res or "")
+                
+                # Google rate-limit එක මඟහරවා ගැනීමට සෑම රික්වෙස්ට් එකක් අතරතුරම තත්පර 1.2ක විවේකයක්
                 time.sleep(1.2)
 
         final_translated_text = "\n\n".join(translated_chunks)
 
-        # 3. Register Custom Fonts for Sinhala & Tamil to avoid square boxes (■■■)
         # ඔබේ backend ෆෝල්ඩර් එකේ මෙම ෆොන්ට් ෆයිල්ස් තිබිය යුතුය.
         sinhala_font_path = "4u-ganganee.ttf"
         tamil_font_path = "VANAVIL-Avvaiyar Regular.otf"
