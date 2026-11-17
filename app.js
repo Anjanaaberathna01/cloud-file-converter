@@ -56,19 +56,52 @@ function openHistory() {
 }
 
 function openPro() {
-  sheet("Go Pro", `<p>Files over 25 MB need an account and a Rs. 25 payment, or a Pro plan. This opens the test checkout from your backend.</p>
-  <button class="go" id="pay">Start checkout (Rs. 25)</button><div id="out"></div>
-  <label class="f">Server address<input type="text" id="srv" value="${esc(api())}"></label>
-  <button class="go" id="save">Save server address</button>`);
+  sheet("Go Pro & Packages", `<p>පරිශීලක ගිණුම හරහා විශාල ගොනු සඳහා ගෙවීම් කිරීම:</p>
+  
+  <div style="background:#f8fafc; padding:15px; border-radius:16px; margin-bottom:10px;">
+    <b>🚀 Pro පැකේජය (මාසිකව)</b>
+    <p style="font-size:13px; color:#64748b; margin:5px 0;">මාසයක් පුරා 100MB දක්වා අසීමිතව ගොනු පරිවර්තනය කරන්න.</p>
+    <button class="go" id="payPro" style="background:#0a58d6; height:45px; font-size:15px;">Pro ලබාගන්න (Rs. 2500 / m)</button>
+  </div>
+
+  <div style="background:#f8fafc; padding:15px; border-radius:16px; margin-bottom:10px;">
+    <b>⚡ Micro-payment (Single File)</b>
+    <p style="font-size:13px; color:#64748b; margin:5px 0;">25MB ට වැඩි එක් ගොනුවක් සඳහා පමණක් ගෙවීම.</p>
+    <button class="go" id="payMicro" style="background:#16a34a; height:45px; font-size:15px;">Rs. 25 ක් ගෙවන්න</button>
+  </div>
+
+  <div id="out"></div>
+  <label class="f" style="margin-top:15px;">Server address<input type="text" id="srv" value="${esc(api())}"></label>
+  <button class="go" id="save" style="margin-top:10px; height:45px; font-size:15px;">Save server address</button>`);
+
   $("#save").onclick = () => { localStorage.api = $("#srv").value.replace(/\/$/, ""); toast("Server address saved"); };
-  $("#pay").onclick = async () => {
-    try {
-      localStorage.uid = localStorage.uid || "user_" + Math.random().toString(36).slice(2, 10);
-      const fd = new FormData(); fd.append("user_id", localStorage.uid); fd.append("amount", 25);
-      const r = await (await fetch(api() + "/api/payment/create-checkout", { method: "POST", body: fd })).json();
-      $("#out").innerHTML = `<a class="dl" href="${esc(r.checkout_url)}" target="_blank" rel="noopener">Open checkout for order ${esc(r.order_id)}</a>`;
-    } catch { $("#out").innerHTML = `<div class="msg er">Cannot reach the server at ${esc(api())}.</div>`; }
-  };
+  
+  // 1. Rs. 2500 Pro Package Checkout
+  $("#payPro").onclick = () => handleCheckout("pro");
+  
+  // 2. Rs. 25 Micro-payment Checkout
+  $("#payMicro").onclick = () => handleCheckout("micro");
+}
+
+async function handleCheckout(packageType) {
+  try {
+    // Firebase හෝ Local storage එකෙන් User ID එක ලබා ගැනීම
+    localStorage.uid = localStorage.uid || "user_" + Math.random().toString(36).slice(2, 10);
+    
+    const fd = new URLSearchParams(); 
+    fd.append("package_type", packageType); // "micro" හෝ "pro" යැවීම
+    
+    // (අවශ්‍ය නම් Firebase Token එක Bearer Header එක ලෙස මෙහිදී එකතු කළ හැක)
+    const r = await (await fetch(api() + "/api/payment/create-checkout", { 
+      method: "POST", 
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: fd 
+    })).json();
+    
+    $("#out").innerHTML = `<a class="dl" href="${esc(r.checkout_url)}" target="_blank" rel="noopener">Open checkout for ${packageType.toUpperCase()} (Rs. ${r.amount})</a>`;
+  } catch { 
+    $("#out").innerHTML = `<div class="msg er">Cannot reach the server at ${esc(api())}.</div>`; 
+  }
 }
 
 const send = (url, fd, onp) => new Promise((res, rej) => {
