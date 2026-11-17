@@ -22,8 +22,11 @@ from reportlab.lib import colors  # pyright: ignore[reportMissingImports, report
 from typing import Optional
 from pptx import Presentation  # pyright: ignore[reportMissingImports]
 from pptx.util import Inches  # pyright: ignore[reportMissingImports]
-#from weasyprint import HTML, default_url_fetcher  # pyright: ignore[reportMissingImports]
+from weasyprint import default_url_fetcher  # pyright: ignore[reportMissingImports]
 from deep_translator import GoogleTranslator  # pyright: ignore[reportMissingImports]
+from reportlab.pdfbase import pdfmetrics  # pyright: ignore[reportMissingImports, reportMissingModuleSource]
+from reportlab.pdfbase.ttfonts import TTFont  # pyright: ignore[reportMissingImports, reportMissingModuleSource]
+
 
 # comtypes works only on Windows (MS Office). Don't crash the whole app on other OS.
 try:
@@ -646,7 +649,6 @@ async def convert_scan_to_pdf(
 #         raise HTTPException(status_code=400, detail=f"HTML conversion error: {str(e)}")
 
 
-#12. PDF Translation Endpoint (Sinhala, Tamil, English)
 @app.post("/convert/pdf-translate")
 async def pdf_translate(
     file: UploadFile = File(...),
@@ -679,21 +681,48 @@ async def pdf_translate(
 
         full_text = "\n\n".join(extracted_text_blocks)
 
-        # 2. Translate text using deep-translator
-        # Language codes: 'si' (Sinhala), 'ta' (Tamil), 'en' (English)
+        # 2. Translate text using deep-translator (with batching & rate-limit protection)
         translator = GoogleTranslator(source=source_lang, target=target_lang)
 
-        # Google translator has character limits per request (~5000 chars), so chunk the text
-        chunks = [full_text[i:i+4500] for i in range(0, len(full_text), 4500)]
+        # Split text into manageable chunks
+        chunks = [full_text[i:i+4000] for i in range(0, len(full_text), 4000)]
         translated_chunks = []
+        batch_size = 3
+        
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i:i + batch_size]
+            batch_results = translator.translate_batch(batch)
+            translated_chunks.extend([res or "" for res in batch_results])
 
-        for chunk in chunks:
-            translated_text = translator.translate(chunk)
-            translated_chunks.append(translated_text or "")
+            # Rate limit මඟහරවා ගැනීමට තත්පර 1.2ක විවේකයක්
+            if i + batch_size < len(chunks):
+                time.sleep(1.2)
 
         final_translated_text = "\n\n".join(translated_chunks)
 
-        # 3. Generate a clean new PDF with the translated text using ReportLab
+        # 3. Register Custom Fonts for Sinhala & Tamil to avoid square boxes (■■■)
+        # ඔබේ backend ෆෝල්ඩර් එකේ මෙම ෆොන්ට් ෆයිල්ස් තිබිය යුතුය.
+        sinhala_font_path = "4u-ganganee.ttf"
+        tamil_font_path = "VANAVIL-Avvaiyar Regular.otf"
+        
+        active_font = "Helvetica" # Default fallback font
+
+        if target_lang == "si" and os.path.exists(sinhala_font_path):
+            try:
+                pdfmetrics.registerFont(TTFont("SinhalaCustomFont", sinhala_font_path))
+                active_font = "SinhalaCustomFont"
+            except Exception as e:
+                print(f"Sinhala font registration error: {e}")
+                
+        elif target_lang == "ta" and os.path.exists(tamil_font_path):
+            try:
+                # .otf හෝ .ttf සඳහා TTFont class එකම පාවිච්චි කළ හැක
+                pdfmetrics.registerFont(TTFont("TamilCustomFont", tamil_font_path))
+                active_font = "TamilCustomFont"
+            except Exception as e:
+                print(f"Tamil font registration error: {e}")
+
+        # 4. Generate a clean new PDF with the translated text using ReportLab
         doc = SimpleDocTemplate(output_path, pagesize=letter)
         elements = []
 
@@ -705,13 +734,15 @@ async def pdf_translate(
             textColor=colors.HexColor("#1e293b"),
             spaceAfter=15
         )
+        
         body_style = ParagraphStyle(
             'TransBody',
             parent=styles['Normal'],
             fontSize=11,
             leading=16,
             textColor=colors.HexColor("#334155"),
-            spaceAfter=10
+            spaceAfter=10,
+            fontName=active_font  # Dynamic font assignment (Sinhala, Tamil or Helvetica)
         )
 
         elements.append(Paragraph(
@@ -720,7 +751,7 @@ async def pdf_translate(
         ))
         elements.append(Spacer(1, 10))
 
-        # escape(): ReportLab Paragraph reads XML, so <, > and & in the text would crash it
+        # ReportLab Paragraph reads XML, so escape special characters
         for paragraph in final_translated_text.split("\n"):
             if paragraph.strip():
                 elements.append(Paragraph(escape(paragraph.strip()), body_style))
@@ -795,6 +826,7 @@ async def organize_pdf(
     finally:
         cleanup_file(input_path)
 
+# 14. Merge Multiple PDFs Endpoint
 @app.post("/convert/merge-pdfs")
 async def merge_pdfs(files: list[UploadFile] = File(...)):
     file_id = str(uuid.uuid4())
