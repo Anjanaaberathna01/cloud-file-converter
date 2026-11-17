@@ -56,18 +56,18 @@ function openHistory() {
 }
 
 function openPro() {
-  sheet("Go Pro & Packages", `<p>පරිශීලක ගිණුම හරහා විශාල ගොනු සඳහා ගෙවීම් කිරීම:</p>
+  sheet("Go Pro & Packages", `<p>User account for large file conversions:</p>
   
   <div style="background:#f8fafc; padding:15px; border-radius:16px; margin-bottom:10px;">
-    <b>🚀 Pro පැකේජය (මාසිකව)</b>
-    <p style="font-size:13px; color:#64748b; margin:5px 0;">මාසයක් පුරා 100MB දක්වා අසීමිතව ගොනු පරිවර්තනය කරන්න.</p>
-    <button class="go" id="payPro" style="background:#0a58d6; height:45px; font-size:15px;">Pro ලබාගන්න (Rs. 2500 / m)</button>
+    <b> Pro Package (Monthly)</b>
+    <p style="font-size:13px; color:#64748b; margin:5px 0;">In a month, you can convert up to 100MB of files.</p>
+    <button class="go" id="payPro" style="background:#0a58d6; height:45px; font-size:15px;">Get Pro Package (Rs. 2500 / m)</button>
   </div>
 
   <div style="background:#f8fafc; padding:15px; border-radius:16px; margin-bottom:10px;">
-    <b>⚡ Micro-payment (Single File)</b>
-    <p style="font-size:13px; color:#64748b; margin:5px 0;">25MB ට වැඩි එක් ගොනුවක් සඳහා පමණක් ගෙවීම.</p>
-    <button class="go" id="payMicro" style="background:#16a34a; height:45px; font-size:15px;">Rs. 25 ක් ගෙවන්න</button>
+    <b> Micro-payment (Single File)</b>
+    <p style="font-size:13px; color:#64748b; margin:5px 0;">Pay only for the files you convert.</p>
+    <button class="go" id="payMicro" style="background:#16a34a; height:45px; font-size:15px;">Pay Rs. 25 for a single file</button>
   </div>
 
   <div id="out"></div>

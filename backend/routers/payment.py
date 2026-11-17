@@ -15,10 +15,7 @@ async def create_checkout(
     package_type: str = Form(...),  # "micro" හෝ "pro"
     user_id: Optional[str] = Form("test_user_123") # ටෙස්ට් කිරීමට ඩිෆෝල්ට් යූසර් කෙනෙක් දීම
 ):
-    """
-    Mock Checkout Endpoint: 
-    Local testing සඳහා authentication නැතුව වැඩ කිරීමට සකස් කළ හැක.
-    """
+    # Mock payment processing logic
     if package_type == "micro":
         amount = 25.00
     elif package_type == "pro":
@@ -41,11 +38,9 @@ async def create_checkout(
 
 @router.get("/mock-success-page")
 async def mock_success_page(order_id: str, user_id: str, package_type: str):
-    
+    # Mock payment success logic
     try:
-        # ඩේටාබේස් එකට ලිවීම තාවකාලිකව අත්හිටුවා ඇත (Test කිරීමට පමණි)
-        # user_ref = db.collection("users").document(user_id)
-        # ...
+        # Mock payment success logic
         
         return {
             "status": "success",
