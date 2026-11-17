@@ -1,70 +1,79 @@
-from fastapi import APIRouter, Form, HTTPException  # pyright: ignore[reportMissingImports]
+from fastapi import APIRouter, Form, HTTPException, Depends
 import os
-from dotenv import load_dotenv  # pyright: ignore[reportMissingImports]
+from dotenv import load_dotenv
 from database import db
+from utils.auth import verify_firebase_token
+from datetime import datetime, timedelta
 
 load_dotenv()
 
 router = APIRouter()
 
-# Mock / Placeholder IDs (Real keys පස්සේ දාගන්න පුළුවන්)
-PAYHERE_MERCHANT_ID = os.getenv("PAYHERE_MERCHANT_ID", "TEST_MERCHANT_ID")
-PAYHERE_MERCHANT_SECRET = os.getenv("PAYHERE_MERCHANT_SECRET", "TEST_SECRET")
-
 @router.post("/create-checkout")
-async def create_mock_checkout(
-    user_id: str = Form(...),
-    amount: float = Form(25.00)
+async def create_checkout(
+    package_type: str = Form(...),  # "micro" (Rs. 25) හෝ "pro" (Rs. 2500)
+    user: dict = Depends(verify_firebase_token)
 ):
-    """
-    Mock Checkout Endpoint: 
-    Local testing සඳහා PayHere checkout request එක simulate කරයි.
-    """
-    # මෙතැනදී frontend එකට PayHere redirect url එක හෝ testing sandbox URL එක යවන්න පුළුවන්
-    mock_order_id = f"ORDER_{user_id}_{int(os.urandom(4).hex(), 16)}"
     
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required for payments.")
+
+    user_id = user.get("uid")
+    user_email = user.get("email")
+
+    if package_type == "micro":
+        amount = 25.00
+        description = "Single Large File Conversion (Micro-payment)"
+    elif package_type == "pro":
+        amount = 2500.00
+        description = "Monthly Pro Package Subscription"
+    else:
+        raise HTTPException(status_code=400, detail="Invalid package type specified!")
+
+    # Unique Order ID එකක් සෑදීම
+    order_id = f"ORD_{user_id}_{int(datetime.now().timestamp())}"
+
+    # මෙතැනදී PayHere හෝ Stripe සැබෑ Checkout URL එක සම්බන්ධ කළ යුතුය.
+    # දැනට Testing සඳහා Mock/Sandbox URL එකක් ලබා දෙයි:
+    checkout_url = f"http://localhost:8000/api/payment/mock-success-page?order_id={order_id}&user_id={user_id}&package_type={package_type}"
+
     return {
         "status": "success",
-        "order_id": mock_order_id,
+        "order_id": order_id,
         "amount": amount,
         "currency": "LKR",
-        "checkout_url": f"http://localhost:8000/api/payment/mock-success-page?order_id={mock_order_id}&user_id={user_id}"
+        "checkout_url": checkout_url
     }
 
 @router.get("/mock-success-page")
-async def mock_success_page(order_id: str, user_id: str):
+async def mock_success_page(order_id: str, user_id: str, package_type: str):
     """
-    Local testing සඳහා payment එක successful බව simulate කරමින් 
-    database එකේ user ට token එකක් එකතු කරන test route එකක්.
+    ගෙවීම සාර්ථක වූ පසු (Payment Gateway එකෙන් පසු) 
+    Firebase Firestore හි යූසර්ගේ පැකේජ් ස්ටේටස් එක අප්ඩේට් කරයි.
     """
     try:
-        if user_id:
-            user_ref = db.collection("users").document(user_id)
-            user_doc = user_ref.get()
-            if user_doc.exists:
-                current_tokens = user_doc.to_dict().get("paid_tokens", 0)
-                user_ref.update({"paid_tokens": current_tokens + 1})
-            else:
-                user_ref.set({"paid_tokens": 1}, merge=True)
-                
+        user_ref = db.collection("users").document(user_id)
+        
+        if package_type == "pro":
+            # මාසයකට (දින 30කට) Pro සක්‍රීය කිරීම
+            expiry_date = datetime.now() + timedelta(days=30)
+            user_ref.set({
+                "is_pro": True,
+                "pro_expiry_date": expiry_date,
+                "last_payment_date": datetime.now()
+            }, merge=True)
+            message = "🎉 Pro Package (Rs. 2500/month) Activated Successfully!"
+            
+        elif package_type == "micro":
+            # 25MB ට වැඩි එක් ගොනුවක් සඳහා ගෙවීම සාර්ථක වූ බව සටහන් කිරීම
+            user_ref.set({
+                "has_paid_micro_fee": True
+            }, merge=True)
+            message = "🎉 Micro-payment (Rs. 25) Successful! You can now convert your file."
+
         return {
             "status": "success",
-            "message": f"🎉 Mock Payment Successful for Order: {order_id}! Now you can convert your file."
+            "message": f"{message} (Order: {order_id})"
         }
     except Exception as e:
-        return {"status": "error", "detail": str(e)}
-
-@router.post("/payhere-webhook")
-async def payhere_webhook(
-    merchant_id: str = Form(...),
-    order_id: str = Form(...),
-    payhere_amount: str = Form(...),
-    payhere_currency: str = Form(...),
-    status_code: str = Form(...),
-    md5sig: str = Form(...),
-    custom_field: str = Form(None)
-):
-    # Production එකට මාරු වුණාම පාවිච්චි කරන Real Webhook logic එක මෙතැන තියෙනවා
-    if status_code == "2":
-        return {"status": "success", "message": "Production payment verified."}
-    return {"status": "pending"}
+        raise HTTPException(status_code=500, detail=str(e))
