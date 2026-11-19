@@ -993,16 +993,16 @@ async def compress_pdf(
     file_size = len(contents)
     await file.seek(0)
 
-    max_free_bytes = 25 * 1024 * 1024  # 25MB සීමාව
+    max_free_bytes = 25 * 1024 * 1024  # 25MB 
 
-    # 1. 25MB සීමාව පැනලා නම් ලොගින් වීම පරීක්ෂා කිරීම
+    # 1. Check if the file exceeds the free limit and if the user is authenticated
     if file_size > max_free_bytes:
         if not user:
             raise HTTPException(
                 status_code=401,
                 detail={
                     "error_code": "LOGIN_REQUIRED_FOR_LARGE_FILES",
-                    "message": "25MB ට වැඩි ගොනු කොම්ප්‍රෙස් කිරීමට කරුණාකර ඔබගේ ගිණුමට ලොග් වන්න."
+                    "message": "25MB free limit exceeded. Please log in to compress larger files or pay a micro-fee."
                 }
             )
 
@@ -1017,7 +1017,7 @@ async def compress_pdf(
     # 2. PDF Header (Magic Number) Validation
     await validate_file_header(file, allowed_types=["pdf"])
 
-    # 3. ආරක්ෂිතව ෆයිල් එක සේව් කිරීම
+    # 3. Save the uploaded PDF to a temporary location for processing
     safe_name = generate_safe_filename(file.filename)
     input_path = os.path.join(UPLOAD_DIR, safe_name)
 
@@ -1030,11 +1030,11 @@ async def compress_pdf(
     output_path = os.path.join(OUTPUT_DIR, output_filename)
 
     try:
-        # PyMuPDF මඟින් PDF එක Compress කිරීම
+        # Compress the PDF using PyMuPDF (fitz) with optimization settings
         with fitz.open(input_path) as doc:
             doc.save(output_path, garbage=4, deflate=True, clean=True)
 
-        # Response යැවුණාට පස්සේ ෆයිල්ස් ස්වයංක්‍රීයව delete වීමට
+        # Schedule cleanup of the output file after serving it
         background_tasks.add_task(cleanup_file, output_path)
 
         return FileResponse(output_path, filename=f"compressed_{file.filename}")
