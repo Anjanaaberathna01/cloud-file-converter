@@ -696,17 +696,14 @@ async def pdf_translate(
                     res = translator.translate(chunk)
                     translated_chunks.append(res or "")
                 except Exception as ex:
-                    # මොකක් හෝ රික්වෙස්ට් ප්‍රශ්නයක් ආවොත් තත්පර 2ක් ඉඳලා ආපහු ට්‍රයි කරන්න පුළුවන්
                     time.sleep(2)
                     res = translator.translate(chunk)
                     translated_chunks.append(res or "")
                 
-                # Google rate-limit එක මඟහරවා ගැනීමට සෑම රික්වෙස්ට් එකක් අතරතුරම තත්පර 1.2ක විවේකයක්
                 time.sleep(1.2)
 
         final_translated_text = "\n\n".join(translated_chunks)
 
-        # ඔබේ backend ෆෝල්ඩර් එකේ මෙම ෆොන්ට් ෆයිල්ස් තිබිය යුතුය.
         sinhala_font_path = "4u-ganganee.ttf"
         tamil_font_path = "VANAVIL-Avvaiyar Regular.otf"
         
