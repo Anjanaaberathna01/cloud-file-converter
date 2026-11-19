@@ -34,9 +34,9 @@ try:
 except ImportError:
     comtypes = None
 
-from utils.security import validate_file_size, validate_file_header, generate_safe_filename, cleanup_file
-from utils.auth import verify_firebase_token
-from routers import payment, file_tools
+from utils.security import validate_file_size, validate_file_header, generate_safe_filename, cleanup_file  # pyright: ignore
+from utils.auth import verify_firebase_token  # pyright: ignore
+from routers import payment, file_tools  # pyright: ignore
 
 
 app = FastAPI(title="Cloud File Converter API")
